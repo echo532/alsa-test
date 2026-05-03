@@ -1,27 +1,13 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <math.h>
 #include <alsa/asoundlib.h>
 
 #include "detector.h"
+#include "midi.h"
 #include "synth.h"
 
-#define CHANNELS 2
-
-static const char *notes[] = {
-    "C","C#","D","D#","E","F",
-    "F#","G","G#","A","A#","B"
-};
-
-int freq_to_midi(float f) {
-    return (int)roundf(69 + 12 * log2f(f / 440.0f));
-}
-
-float midi_to_freq(int m) {
-    return 440.0f * powf(2.0f, (m - 69) / 12.0f);
-}
-
 int main() {
+
     snd_pcm_t *capture;
     snd_pcm_hw_params_t *params;
 
@@ -47,13 +33,11 @@ int main() {
     snd_pcm_prepare(capture);
 
     if (synth_init() < 0) {
-        printf("Synth init failed\n");
+        printf("synth init failed\n");
         return 1;
     }
 
-    printf("Running quantized pitch mirror...\n");
-
-    int last_midi = -1;
+    printf("Stable MIDI pitch system running...\n");
 
     while (1) {
 
@@ -70,27 +54,17 @@ int main() {
         if (freq < 50 || freq > 2000)
             continue;
 
-        // 🎯 QUANTIZATION STEP (THIS FIXES CHATTER)
         int midi = freq_to_midi(freq);
+        int stable_midi = update_stable_midi(midi);
 
-        // hysteresis (prevents note flicker)
-        if (last_midi != -1 && abs(midi - last_midi) <= 1)
-            midi = last_midi;
+        if (stable_midi < 0)
+            continue;
 
-        last_midi = midi;
+        float out_freq = midi_to_freq(stable_midi);
 
-        float quantized_freq = midi_to_freq(midi);
-
-        int note = midi % 12;
-        int octave = midi / 12 - 1;
-
-        printf("\r%s%d (%.2f Hz)        ",
-               notes[note], octave, quantized_freq);
-
+        printf("\rMIDI %d -> %.2f Hz     ", stable_midi, out_freq);
         fflush(stdout);
 
-        synth_render(quantized_freq, out);
+        synth_render(out_freq, out);
     }
-
-    return 0;
 }

@@ -2,7 +2,7 @@
 #include <math.h>
 
 int is_active(float *x, int N) {
-    float rms = 0;
+    float rms = 0.0f;
 
     for (int i = 0; i < N; i++)
         rms += x[i] * x[i];
@@ -16,11 +16,11 @@ float detect_pitch(float *x, int N) {
     int min_lag = RATE / MAX_FREQ;
     int max_lag = RATE / MIN_FREQ;
 
-    float best = 0;
+    float best = 0.0f;
     int best_lag = 0;
 
     for (int lag = min_lag; lag < max_lag; lag++) {
-        float sum = 0;
+        float sum = 0.0f;
 
         for (int i = 0; i < N - lag; i++)
             sum += x[i] * x[i + lag];

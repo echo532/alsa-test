@@ -1,6 +1,5 @@
 #include "synth.h"
 #include <math.h>
-#include <stdio.h>
 
 static snd_pcm_t *playback;
 static float phase = 0.0f;
@@ -8,9 +7,9 @@ static float phase = 0.0f;
 int synth_init(void) {
     snd_pcm_hw_params_t *params;
 
-    int rc = snd_pcm_open(&playback, "plughw:1,0",
-                          SND_PCM_STREAM_PLAYBACK, 0);
-    if (rc < 0) return rc;
+    if (snd_pcm_open(&playback, "plughw:1,0",
+                     SND_PCM_STREAM_PLAYBACK, 0) < 0)
+        return -1;
 
     snd_pcm_hw_params_alloca(&params);
 
@@ -23,10 +22,9 @@ int synth_init(void) {
     snd_pcm_hw_params_set_rate(playback, params, RATE, 0);
     snd_pcm_hw_params_set_period_size(playback, params, FRAME_SIZE, 0);
 
-    rc = snd_pcm_hw_params(playback, params);
-    if (rc < 0) return rc;
-
+    snd_pcm_hw_params(playback, params);
     snd_pcm_prepare(playback);
+
     return 0;
 }
 
@@ -36,12 +34,10 @@ void synth_render(float freq, int16_t *out) {
     for (int i = 0; i < FRAME_SIZE; i++) {
 
         float s = sinf(phase);
-
-        // stable amplitude (no clipping / harshness)
         int16_t v = (int16_t)(s * 1200);
 
         out[2*i] = v;
-        out[2*i + 1] = v;
+        out[2*i+1] = v;
 
         phase += inc;
 
