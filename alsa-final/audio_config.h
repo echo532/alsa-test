@@ -8,6 +8,6 @@
 
 // Pitch detection range
 #define MIN_FREQ 80
-#define MAX_FREQ 1200
+#define MAX_FREQ 1000
 
 #endif
