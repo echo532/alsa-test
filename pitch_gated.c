@@ -6,7 +6,7 @@
 #define RATE 48000
 #define CHANNELS 2
 #define FRAME_SIZE 256   // latency-focused
-#define RMS_GATE 0.008f  // tune this for your mic
+#define RMS_GATE 0.003f  // tune this for your mic
 
 static const char *notes[] = {
     "C","C#","D","D#","E","F",
@@ -67,8 +67,8 @@ int instrument_present(float *x, int N) {
     if (rms < RMS_GATE) return 0;
 
     // too noisy (white noise has high zero crossings)
-    float zcr = (float)zero_crossings / N;
-    if (zcr > 0.35f) return 0;
+    // float zcr = (float)zero_crossings / N;
+    // if (zcr > 0.55f) return 0;
 
     return 1;
 }
