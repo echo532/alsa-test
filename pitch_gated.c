@@ -120,7 +120,7 @@ int main() {
         //ONLY NOW run expensive pitch detection
         float freq = autocorr_pitch(mono, FRAME_SIZE);
 
-        if (freq < 50 || freq > 2000) continue;
+        if (freq < 70 || freq > 1000) continue;
 
         // stability filter (removes flicker)
         if (fabs(freq - last_freq) < 5.0f) {
