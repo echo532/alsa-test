@@ -35,6 +35,19 @@ int synth_init() {
 
     snd_pcm_prepare(playback);
 
+    printf("Playback ready\n");
+
+    int16_t test[256 * 2];
+
+    for (int i = 0; i < 256; i++) {
+        test[2*i] = 2000;
+        test[2*i+1] = 2000;
+    }
+
+snd_pcm_writei(playback, test, 256);
+
+
+
     return 0;
 }
 
@@ -52,5 +65,12 @@ void synth_generate(float freq, int16_t *out) {
         if (phase > 2*M_PI) phase -= 2*M_PI;
     }
 
-    snd_pcm_writei(playback, out, FRAME_SIZE);
+    int rc = snd_pcm_writei(playback, out, FRAME_SIZE);
+
+    if (rc == -EPIPE) {
+        snd_pcm_prepare(playback);  // underrun recovery
+    } else if (rc < 0) {
+        fprintf(stderr, "write error: %s\n", snd_strerror(rc));
+    }
+
 }

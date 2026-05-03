@@ -52,8 +52,8 @@ int main() {
         for (int i = 0; i < FRAME_SIZE; i++)
             mono[i] = buffer[i*2] / 32768.0f;
 
-        if (!is_active(mono, FRAME_SIZE))
-            continue;
+        //if (!is_active(mono, FRAME_SIZE))
+        //    continue;
 
         float freq = detect_pitch(mono, FRAME_SIZE);
 
