@@ -51,28 +51,15 @@ int main() {
 
     while (1) {
 
-        snd_pcm_readi(capture, buf, FRAME_SIZE);
+	// ignore mic completely for now
+    int midi = 60; // Middle C
+    float freq = 261.63f;
 
-        for (int i = 0; i < FRAME_SIZE; i++)
-            mono[i] = buf[i * 2] / 32768.0f;
+    printf("\rFORCED OUTPUT: MIDI %d  %.2f Hz", midi, freq);
+    fflush(stdout);
 
-        if (!is_active(mono, FRAME_SIZE))
-            continue;
-
-        float pitch = detect_pitch(mono, FRAME_SIZE);
-
-        if (pitch < 0)
-            continue;
-
-        if (!update_note_state(&state, pitch, &midi, &freq)) {
-            midi = freq_to_midi(pitch);
-            freq = midi_to_freq(midi);
-        }
+    synth_render(freq, out);
 
 
-        printf("\rMIDI %d -> %.2f Hz        ", midi, freq);
-        fflush(stdout);
-
-        synth_render(freq, out);
     }
 }
