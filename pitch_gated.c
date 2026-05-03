@@ -18,7 +18,7 @@ int freq_to_midi(float f) {
 }
 
 float autocorr_pitch(float *x, int N) {
-    int min_lag = RATE / 1000;
+    int min_lag = RATE / 500;
     int max_lag = RATE / 50;
 
     float best = 0;
