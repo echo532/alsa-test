@@ -46,7 +46,7 @@ int update_note_state(note_state_t *s, float freq, int *out_midi, float *out_fre
     } else {
         s->stable_count++;
 
-        if (s->stable_count >= 3) {
+        if (s->stable_count >= 1) {
             s->locked_midi = candidate;
             s->stable_count = 0;
         }

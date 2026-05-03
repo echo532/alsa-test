@@ -38,7 +38,12 @@ int main() {
         return 1;
     }
 
-    note_state_t state = {0};
+    note_state_t state = {
+        .locked_midi = -1,
+        .stable_count = 0,
+        .index = 0
+    };
+
     int midi;
     float freq;
 
@@ -59,8 +64,11 @@ int main() {
         if (pitch < 0)
             continue;
 
-        if (!update_note_state(&state, pitch, &midi, &freq))
-            continue;
+        if (!update_note_state(&state, pitch, &midi, &freq)) {
+            midi = freq_to_midi(pitch);
+            freq = midi_to_freq(midi);
+        }
+
 
         printf("\rMIDI %d -> %.2f Hz        ", midi, freq);
         fflush(stdout);
