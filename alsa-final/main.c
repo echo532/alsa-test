@@ -1,10 +1,17 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <alsa/asoundlib.h>
 
 #include "detector.h"
 #include "midi.h"
 #include "synth.h"
+#include "audio_config.h"
+
+static const char *notes[] = {
+    "C","C#","D","D#","E","F",
+    "F#","G","G#","A","A#","B"
+};
 
 int main() {
 
@@ -37,7 +44,10 @@ int main() {
         return 1;
     }
 
-    printf("Stable MIDI pitch system running...\n");
+    printf("Tuner running (stable MIDI + cents)...\n");
+
+    int midi;
+    float cents;
 
     while (1) {
 
@@ -51,20 +61,21 @@ int main() {
 
         float freq = detect_pitch(mono, FRAME_SIZE);
 
-        if (freq < 50 || freq > 2000)
+        int ok = update_stable_midi(freq, &midi, &cents);
+
+        if (!ok)
             continue;
 
-        int midi = freq_to_midi(freq);
-        int stable_midi = update_stable_midi(midi);
+        int note = midi % 12;
+        int octave = midi / 12 - 1;
 
-        if (stable_midi < 0)
-            continue;
+        printf("\r%s%d  |  %.2f Hz  |  %+0.1f cents   ",
+               notes[note], octave,
+               midi_to_freq(midi),
+               cents);
 
-        float out_freq = midi_to_freq(stable_midi);
-
-        printf("\rMIDI %d -> %.2f Hz     ", stable_midi, out_freq);
         fflush(stdout);
 
-        synth_render(out_freq, out);
+        synth_render(midi_to_freq(midi), out);
     }
 }
