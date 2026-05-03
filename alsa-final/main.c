@@ -9,6 +9,8 @@
 
 int main() {
 
+    FILE *f = fopen("pitch_log.txt", "w");
+
     snd_pcm_t *capture;
     snd_pcm_hw_params_t *params;
 
@@ -51,12 +53,6 @@ int main() {
 
     while (1) {
 
-	// ignore mic completely for now
-    int midi = 60; // Middle C
-    float freq = 261.63f;
-
-    printf("\rFORCED OUTPUT: MIDI %d  %.2f Hz", midi, freq);
-    fflush(stdout);
 
     synth_render(freq, out);
 
@@ -86,6 +82,12 @@ int main() {
 
 
         printf("\rMIDI %d -> %.2f Hz        ", midi, freq);
+
+	if (pitch > 0) {
+            fprintf(f, "%f\n", pitch);
+            fflush(f);
+        }
+
         fflush(stdout);
 
         synth_render(freq, out);
