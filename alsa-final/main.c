@@ -1,72 +1,56 @@
-#include <alsa/asoundlib.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include "detector.h"
 #include "synth.h"
-#include "audio_config.h"
+#include <math.h>
+#include <stdio.h>
 
-#define CHANNELS 2
+static snd_pcm_t *playback;
+static float phase = 0.0f;
 
-int main() {
-    snd_pcm_t *capture;
+int synth_init(void) {
     snd_pcm_hw_params_t *params;
 
-    int16_t *buf = malloc(FRAME_SIZE * CHANNELS * sizeof(int16_t));
-    float *mono = malloc(FRAME_SIZE * sizeof(float));
-    int16_t *out = malloc(FRAME_SIZE * CHANNELS * sizeof(int16_t));
-
-    snd_pcm_open(&capture, "plughw:2,0",
-                 SND_PCM_STREAM_CAPTURE, 0);
+    int rc = snd_pcm_open(&playback, "plughw:1,0",
+                          SND_PCM_STREAM_PLAYBACK, 0);
+    if (rc < 0) return rc;
 
     snd_pcm_hw_params_alloca(&params);
 
-    snd_pcm_hw_params_any(capture, params);
-    snd_pcm_hw_params_set_access(capture, params,
+    snd_pcm_hw_params_any(playback, params);
+    snd_pcm_hw_params_set_access(playback, params,
                                  SND_PCM_ACCESS_RW_INTERLEAVED);
-    snd_pcm_hw_params_set_format(capture, params,
+    snd_pcm_hw_params_set_format(playback, params,
                                  SND_PCM_FORMAT_S16_LE);
-    snd_pcm_hw_params_set_channels(capture, params, 2);
-    snd_pcm_hw_params_set_rate(capture, params, RATE, 0);
-    snd_pcm_hw_params_set_period_size(capture, params, FRAME_SIZE, 0);
+    snd_pcm_hw_params_set_channels(playback, params, CHANNELS);
+    snd_pcm_hw_params_set_rate(playback, params, RATE, 0);
+    snd_pcm_hw_params_set_period_size(playback, params, FRAME_SIZE, 0);
 
-    snd_pcm_hw_params(capture, params);
-    snd_pcm_prepare(capture);
+    rc = snd_pcm_hw_params(playback, params);
+    if (rc < 0) return rc;
 
-    if (synth_init() < 0) {
-        printf("Synth init failed\n");
-        return 1;
-    }
-
-    printf("Running stable pitch mirror...\n");
-
-    float freq = 440;
-    int update_counter = 0;
-
-    while (1) {
-
-        snd_pcm_readi(capture, buf, FRAME_SIZE);
-
-        for (int i = 0; i < FRAME_SIZE; i++)
-            mono[i] = buf[i * 2] / 32768.0f;
-
-        if (!is_active(mono, FRAME_SIZE))
-            continue;
-
-        float new_freq = detect_pitch(mono, FRAME_SIZE);
-
-        if (new_freq < 50 || new_freq > 2000)
-            continue;
-
-        // ⛔ SLOW DOWN UPDATES (FIX DISTORTION)
-        if (++update_counter % 3 == 0) {
-            freq = new_freq;
-            printf("\r%.2f Hz      ", freq);
-            fflush(stdout);
-        }
-
-        // 🎯 stable synthesis
-        synth_render(freq, out);
-    }
-
+    snd_pcm_prepare(playback);
     return 0;
+}
+
+void synth_render(float freq, int16_t *out) {
+    float inc = 2.0f * M_PI * freq / RATE;
+
+    for (int i = 0; i < FRAME_SIZE; i++) {
+
+        float s = sinf(phase);
+
+        // stable amplitude (no clipping / harshness)
+        int16_t v = (int16_t)(s * 1200);
+
+        out[2*i] = v;
+        out[2*i + 1] = v;
+
+        phase += inc;
+
+        if (phase > 2.0f * M_PI)
+            phase -= 2.0f * M_PI;
+    }
+
+    int rc = snd_pcm_writei(playback, out, FRAME_SIZE);
+
+    if (rc == -EPIPE)
+        snd_pcm_prepare(playback);
 }
