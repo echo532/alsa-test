@@ -1,9 +1,9 @@
 #ifndef SYNTH_H
 #define SYNTH_H
 
-#include <alsa/asoundlib.h>
-
 #include "audio_config.h"
+
+#include <alsa/asoundlib.h>
 
 #define FRAME_SIZE 256
 
