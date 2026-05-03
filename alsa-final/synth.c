@@ -5,10 +5,11 @@ static snd_pcm_t *playback;
 static float phase = 0.0f;
 
 int synth_init(void) {
+
     snd_pcm_hw_params_t *params;
 
     if (snd_pcm_open(&playback, "plughw:1,0",
-                     SND_PCM_STREAM_PLAYBACK, 0) < 0)
+                      SND_PCM_STREAM_PLAYBACK, 0) < 0)
         return -1;
 
     snd_pcm_hw_params_alloca(&params);
@@ -29,6 +30,7 @@ int synth_init(void) {
 }
 
 void synth_render(float freq, int16_t *out) {
+
     float inc = 2.0f * M_PI * freq / RATE;
 
     for (int i = 0; i < FRAME_SIZE; i++) {
@@ -37,7 +39,7 @@ void synth_render(float freq, int16_t *out) {
         int16_t v = (int16_t)(s * 1200);
 
         out[2*i] = v;
-        out[2*i+1] = v;
+        out[2*i + 1] = v;
 
         phase += inc;
 
@@ -45,8 +47,5 @@ void synth_render(float freq, int16_t *out) {
             phase -= 2.0f * M_PI;
     }
 
-    int rc = snd_pcm_writei(playback, out, FRAME_SIZE);
-
-    if (rc == -EPIPE)
-        snd_pcm_prepare(playback);
+    snd_pcm_writei(playback, out, FRAME_SIZE);
 }

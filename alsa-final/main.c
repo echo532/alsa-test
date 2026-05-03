@@ -1,17 +1,11 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <math.h>
 #include <alsa/asoundlib.h>
 
 #include "detector.h"
-#include "midi.h"
+#include "note_state.h"
 #include "synth.h"
 #include "audio_config.h"
-
-static const char *notes[] = {
-    "C","C#","D","D#","E","F",
-    "F#","G","G#","A","A#","B"
-};
 
 int main() {
 
@@ -44,10 +38,11 @@ int main() {
         return 1;
     }
 
-    printf("Tuner running (stable MIDI + cents)...\n");
-
+    note_state_t state = {0};
     int midi;
-    float cents;
+    float freq;
+
+    printf("Stable note state machine running...\n");
 
     while (1) {
 
@@ -59,23 +54,17 @@ int main() {
         if (!is_active(mono, FRAME_SIZE))
             continue;
 
-        float freq = detect_pitch(mono, FRAME_SIZE);
+        float pitch = detect_pitch(mono, FRAME_SIZE);
 
-        int ok = update_stable_midi(freq, &midi, &cents);
-
-        if (!ok)
+        if (pitch < 0)
             continue;
 
-        int note = midi % 12;
-        int octave = midi / 12 - 1;
+        if (!update_note_state(&state, pitch, &midi, &freq))
+            continue;
 
-        printf("\r%s%d  |  %.2f Hz  |  %+0.1f cents   ",
-               notes[note], octave,
-               midi_to_freq(midi),
-               cents);
-
+        printf("\rMIDI %d -> %.2f Hz        ", midi, freq);
         fflush(stdout);
 
-        synth_render(midi_to_freq(midi), out);
+        synth_render(freq, out);
     }
 }

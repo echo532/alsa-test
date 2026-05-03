@@ -1,3 +1,4 @@
+#include "audio_config.h"
 #include "detector.h"
 #include <math.h>
 
@@ -9,10 +10,11 @@ int is_active(float *x, int N) {
 
     rms = sqrtf(rms / N);
 
-    return rms > 0.003f;
+    return rms > 0.004f;
 }
 
 float detect_pitch(float *x, int N) {
+
     int min_lag = RATE / MAX_FREQ;
     int max_lag = RATE / MIN_FREQ;
 
@@ -20,6 +22,7 @@ float detect_pitch(float *x, int N) {
     int best_lag = 0;
 
     for (int lag = min_lag; lag < max_lag; lag++) {
+
         float sum = 0.0f;
 
         for (int i = 0; i < N - lag; i++)
@@ -34,5 +37,10 @@ float detect_pitch(float *x, int N) {
     if (best_lag == 0)
         return -1;
 
-    return (float)RATE / best_lag;
+    float freq = (float)RATE / best_lag;
+
+    if (freq < MIN_FREQ || freq > MAX_FREQ)
+        return -1;
+
+    return freq;
 }
