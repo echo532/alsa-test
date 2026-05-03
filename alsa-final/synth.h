@@ -3,6 +3,8 @@
 
 #include <alsa/asoundlib.h>
 
+#include "audio_config.h"
+
 #define FRAME_SIZE 256
 
 int synth_init(void);

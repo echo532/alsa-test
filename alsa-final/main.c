@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include "detector.h"
 #include "synth.h"
+#include "audio_config.h"
 
 #define CHANNELS 2
 
