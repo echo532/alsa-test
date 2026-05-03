@@ -60,3 +60,11 @@ int update_note_state(note_state_t *s, float freq, int *out_midi, float *out_fre
 
     return 1;
 }
+
+int get_provisional_midi(float freq) {
+    if (freq < 50.0f || freq > 2000.0f)
+        return -1;
+
+    return freq_to_midi(freq);
+}
+

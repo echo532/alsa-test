@@ -60,6 +60,34 @@ int main() {
 
     synth_render(freq, out);
 
+        snd_pcm_readi(capture, buf, FRAME_SIZE);
 
+        for (int i = 0; i < FRAME_SIZE; i++)
+            mono[i] = buf[i * 2] / 32768.0f;
+
+        if (!is_active(mono, FRAME_SIZE))
+            continue;
+
+        float pitch = detect_pitch(mono, FRAME_SIZE);
+
+        if (pitch < 0)
+            continue;
+
+        int ok = update_note_state(&state, pitch, &midi, &freq);
+
+        if (!ok) {
+            midi = get_provisional_midi(pitch);
+            if (midi < 0)
+                continue;
+
+            freq = midi_to_freq(midi);
+        }
+
+
+
+        printf("\rMIDI %d -> %.2f Hz        ", midi, freq);
+        fflush(stdout);
+
+        synth_render(freq, out);
     }
 }
