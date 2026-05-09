@@ -1,5 +1,6 @@
 sudo apt update
 sudo apt install jackd2 jack-tools pulseaudio-module-jack
+sudo apt install libjack-jackd2-dev
 
 sudo nano /etc/security/limits.d/audio.conf
 
@@ -7,4 +8,23 @@ Add:
 @audio   -  rtprio     95
 @audio   -  memlock    unlimited
 @audio   -  nice       -10
+
+sudo usermod -a -G audio $USER
+
+REBOOT
+
+jackd -d alsa -r 48000 -p 128 -n 2
+
+Increase buffer if needed:
+jackd -d alsa -r 48000 -p 256 -n 3
+
+jackd -d alsa -d hw:1 -r 48000 -p 256 -n 3
+
+Verify running:
+jack_lsp
+
+
+Example routing manual update:
+jack_connect system:capture_1 your_client:input
+jack_connect your_client:output system:playback_1
 
