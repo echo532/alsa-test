@@ -1,111 +1,102 @@
-// ============================================================
-// Realtime Sinusoidal Harmonizer (JACK + FFTW)
-// ============================================================
-
 #include <jack/jack.h>
-#include <fftw3.h>
 #include <math.h>
-#include <stdio.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
-#include <unistd.h>
 
-#define SAMPLE_RATE 48000
-#define FFT_SIZE 1024
-#define ANALYSIS_HOP 256
-#define MAX_PARTIALS 32
-#define MAG_THRESHOLD 5.0f
+#define SR 48000
+#define BUFFER_SIZE 2048
+#define HOP_SIZE 256
+#define MAX_OSC 64
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
 
 // ============================================================
-// DATA STRUCTURES
+// JACK
+// ============================================================
+
+jack_port_t *in_port;
+jack_port_t *out_port;
+jack_client_t *client;
+
+// ============================================================
+// AUDIO BUFFERS
+// ============================================================
+
+float buffer[BUFFER_SIZE];
+int buffer_pos = 0;
+
+// ============================================================
+// HARMONIC MODEL
 // ============================================================
 
 typedef struct {
     float freq;
     float amp;
     float phase;
-} Partial;
+} Osc;
 
-// ============================================================
-// JACK
-// ============================================================
-
-jack_port_t *input_port;
-jack_port_t *output_port;
-jack_client_t *client;
-
-// ============================================================
-// BUFFERS
-// ============================================================
-
-float analysis_buffer[FFT_SIZE];
-int analysis_pos = 0;
-
-float fft_in[FFT_SIZE];
-fftwf_complex fft_out[FFT_SIZE / 2 + 1];
-fftwf_plan fft_plan;
-
-float window[FFT_SIZE];
-
-// ============================================================
-// HARMONY MODEL
-// ============================================================
-
-Partial harmony_partials[MAX_PARTIALS];
-int harmony_count = 0;
-
-// Change THIS live:
-// 1.0 = unison
-// 1.25 = major third
-// 1.5 = perfect fifth
-// 2.0 = octave
+Osc osc_bank[MAX_OSC];
+int osc_count = 0;
 
 volatile float harmony_ratio = 1.5f;
 
 // ============================================================
-// WINDOW FUNCTION
+// AUTOCORRELATION PITCH DETECTION
 // ============================================================
 
-void build_window() {
-    for (int i = 0; i < FFT_SIZE; i++) {
-        window[i] = 0.5f * (1.0f - cosf(2.0f * M_PI * i / (FFT_SIZE - 1)));
+float detect_pitch(float *buf, int size)
+{
+    int best_lag = 0;
+    float best_corr = 0.0f;
+
+    int min_lag = SR / 1000;   // 1000 Hz max
+    int max_lag = SR / 50;     // 50 Hz min
+
+    for (int lag = min_lag; lag < max_lag; lag++) {
+
+        float corr = 0.0f;
+
+        for (int i = 0; i < size - lag; i++) {
+            corr += buf[i] * buf[i + lag];
+        }
+
+        if (corr > best_corr) {
+            best_corr = corr;
+            best_lag = lag;
+        }
     }
+
+    if (best_lag == 0) return 0.0f;
+
+    return (float)SR / best_lag;
 }
 
 // ============================================================
-// FFT ANALYSIS
+// OSCILLATOR UPDATE
 // ============================================================
 
-void analyze() {
-    for (int i = 0; i < FFT_SIZE; i++) {
-        fft_in[i] = analysis_buffer[i] * window[i];
-    }
+void update_oscillators(float f0)
+{
+    osc_count = 0;
 
-    fftwf_execute(fft_plan);
+    if (f0 <= 0.0f) return;
 
-    harmony_count = 0;
+    // generate harmonic series
+    for (int i = 1; i < MAX_OSC; i++) {
 
-    for (int i = 1; i < FFT_SIZE / 2 && harmony_count < MAX_PARTIALS; i++) {
+        float freq = f0 * i * harmony_ratio;
 
-        float re = fft_out[i][0];
-        float im = fft_out[i][1];
+        if (freq > SR * 0.5f)
+            break;
 
-        float mag = sqrtf(re * re + im * im);
+        osc_bank[osc_count].freq = freq;
+        osc_bank[osc_count].amp = 1.0f / i;
+        osc_bank[osc_count].phase = 0.0f;
 
-        if (mag > MAG_THRESHOLD) {
-
-            float freq = (float)i * SAMPLE_RATE / FFT_SIZE;
-
-            harmony_partials[harmony_count].freq = freq * harmony_ratio;
-            harmony_partials[harmony_count].amp = mag / FFT_SIZE;
-            harmony_partials[harmony_count].phase = 0.0f;
-
-            harmony_count++;
-        }
+        osc_count++;
     }
 }
 
@@ -113,72 +104,81 @@ void analyze() {
 // SYNTHESIS
 // ============================================================
 
-float synthesize() {
+float synth()
+{
     float out = 0.0f;
 
-    for (int i = 0; i < harmony_count; i++) {
+    for (int i = 0; i < osc_count; i++) {
 
-        Partial *p = &harmony_partials[i];
+        Osc *o = &osc_bank[i];
 
-        out += p->amp * sinf(p->phase);
+        out += o->amp * sinf(o->phase);
 
-        p->phase += 2.0f * M_PI * p->freq / SAMPLE_RATE;
+        o->phase += 2.0f * M_PI * o->freq / SR;
 
-        if (p->phase > 2.0f * M_PI)
-            p->phase -= 2.0f * M_PI;
+        if (o->phase > 2.0f * M_PI)
+            o->phase -= 2.0f * M_PI;
     }
 
-    return out * 0.1f; // prevent clipping
+    return out * 0.1f;
+}
+
+// ============================================================
+// ANALYSIS STEP
+// ============================================================
+
+void analyze()
+{
+    float f0 = detect_pitch(buffer, BUFFER_SIZE);
+
+    update_oscillators(f0);
+
+    printf("Detected f0: %.2f Hz | Oscillators: %d\n",
+           f0, osc_count);
 }
 
 // ============================================================
 // JACK CALLBACK
 // ============================================================
 
-int process(jack_nframes_t nframes, void *arg) {
-
-    jack_default_audio_sample_t *in =
-        jack_port_get_buffer(input_port, nframes);
-
-    jack_default_audio_sample_t *out =
-        jack_port_get_buffer(output_port, nframes);
+int process(jack_nframes_t nframes, void *arg)
+{
+    float *in = jack_port_get_buffer(in_port, nframes);
+    float *out = jack_port_get_buffer(out_port, nframes);
 
     static int hop = 0;
 
     for (int i = 0; i < nframes; i++) {
 
-        // store analysis buffer
-        analysis_buffer[analysis_pos++] = in[i];
+        buffer[buffer_pos++] = in[i];
 
-        if (analysis_pos >= FFT_SIZE) {
-            memmove(
-                analysis_buffer,
-                analysis_buffer + ANALYSIS_HOP,
-                sizeof(float) * (FFT_SIZE - ANALYSIS_HOP));
+        if (buffer_pos >= BUFFER_SIZE) {
+            memmove(buffer,
+                    buffer + HOP_SIZE,
+                    sizeof(float) * (BUFFER_SIZE - HOP_SIZE));
 
-            analysis_pos = FFT_SIZE - ANALYSIS_HOP;
+            buffer_pos = BUFFER_SIZE - HOP_SIZE;
         }
 
         hop++;
 
-        if (hop >= ANALYSIS_HOP) {
+        if (hop >= HOP_SIZE) {
             analyze();
             hop = 0;
         }
 
-        float harmony = synthesize();
-
-        out[i] = in[i] * 0.7f + harmony * 0.7f;
+        out[i] = in[i] * 0.5f + synth() * 0.8f;
     }
 
     return 0;
 }
 
 // ============================================================
-// JACK SHUTDOWN
+// JACK SETUP
 // ============================================================
 
-void shutdown_cb(void *arg) {
+void shutdown_cb(void *arg)
+{
     exit(1);
 }
 
@@ -186,54 +186,39 @@ void shutdown_cb(void *arg) {
 // MAIN
 // ============================================================
 
-int main(int argc, char *argv[]) {
-
-    if (argc > 1) {
+int main(int argc, char *argv[])
+{
+    if (argc > 1)
         harmony_ratio = atof(argv[1]);
-    }
 
-    printf("Harmony ratio: %f\n", harmony_ratio);
+    printf("Harmony ratio: %.2f\n", harmony_ratio);
 
-    build_window();
-
-    fft_plan = fftwf_plan_dft_r2c_1d(
-        FFT_SIZE,
-        fft_in,
-        fft_out,
-        FFTW_MEASURE);
-
-    client = jack_client_open(
-        "harmonizer",
-        JackNullOption,
-        NULL);
+    client = jack_client_open("harmonizer", 0, NULL);
 
     if (!client) {
         fprintf(stderr, "Failed JACK\n");
         return 1;
     }
 
-    jack_set_process_callback(client, process, 0);
-    jack_on_shutdown(client, shutdown_cb, 0);
+    jack_set_process_callback(client, process, NULL);
+    jack_on_shutdown(client, shutdown_cb, NULL);
 
-    input_port = jack_port_register(
-        client,
-        "in",
-        JACK_DEFAULT_AUDIO_TYPE,
-        JackPortIsInput,
-        0);
+    in_port = jack_port_register(client,
+                                 "in",
+                                 JACK_DEFAULT_AUDIO_TYPE,
+                                 JackPortIsInput, 0);
 
-    output_port = jack_port_register(
-        client,
-        "out",
-        JACK_DEFAULT_AUDIO_TYPE,
-        JackPortIsOutput,
-        0);
+    out_port = jack_port_register(client,
+                                  "out",
+                                  JACK_DEFAULT_AUDIO_TYPE,
+                                  JackPortIsOutput, 0);
 
     jack_activate(client);
 
     printf("Running...\n");
 
-    while (1) sleep(1);
+    while (1)
+        sleep(1);
 
     return 0;
 }
