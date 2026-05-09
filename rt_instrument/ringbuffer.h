@@ -1,8 +1,6 @@
 #ifndef RINGBUFFER_H
 #define RINGBUFFER_H
 
-#include <stdint.h>
-
 typedef struct {
     float *buffer;
     int size;
