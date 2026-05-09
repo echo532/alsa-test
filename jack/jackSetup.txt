@@ -1,0 +1,10 @@
+sudo apt update
+sudo apt install jackd2 jack-tools pulseaudio-module-jack
+
+sudo nano /etc/security/limits.d/audio.conf
+
+Add:
+@audio   -  rtprio     95
+@audio   -  memlock    unlimited
+@audio   -  nice       -10
+
