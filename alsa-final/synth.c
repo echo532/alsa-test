@@ -4,10 +4,14 @@
 #include <alsa/asoundlib.h>
 #include <math.h>
 #include <stdint.h>
+#include <stdio.h>
 
-static snd_pcm_t *playback;
+static snd_pcm_t *playback = NULL;
 
 static float phase = 0.0f;
+
+// persistent buffer (IMPORTANT)
+static int16_t buffer[FRAME_SIZE * CHANNELS];
 
 int synth_init(void) {
 
@@ -16,8 +20,10 @@ int synth_init(void) {
     if (snd_pcm_open(&playback,
                      "plughw:1,0",
                      SND_PCM_STREAM_PLAYBACK,
-                     0) < 0)
+                     0) < 0) {
+        printf("failed to open playback device\n");
         return -1;
+    }
 
     snd_pcm_hw_params_alloca(&params);
 
@@ -50,7 +56,10 @@ int synth_init(void) {
         FRAME_SIZE,
         0);
 
-    snd_pcm_hw_params(playback, params);
+    if (snd_pcm_hw_params(playback, params) < 0) {
+        printf("failed hw params\n");
+        return -1;
+    }
 
     snd_pcm_prepare(playback);
 
@@ -58,35 +67,53 @@ int synth_init(void) {
 }
 
 void synth_play(float freq) {
-    printf("PLAY %.2f\n", freq);
+
+    if (!playback)
+        return;
+
+    if (freq <= 0.0f)
+        return;
+
+    float inc =
+        2.0f * M_PI * freq / RATE;
+
+    for (int i = 0; i < FRAME_SIZE; i++) {
+
+        float s = sinf(phase);
+
+        int16_t v =
+            (int16_t)(s * 8000);
+
+        buffer[2 * i] = v;
+        buffer[2 * i + 1] = v;
+
+        phase += inc;
+
+        if (phase > 2.0f * M_PI)
+            phase -= 2.0f * M_PI;
+    }
+
+    int err = snd_pcm_writei(
+        playback,
+        buffer,
+        FRAME_SIZE);
+
+    // 🔥 CRITICAL FIX: handle underrun
+    if (err == -EPIPE) {
+        snd_pcm_prepare(playback);
+    }
+
+    // optional safety fallback
+    if (err < 0 && err != -EPIPE) {
+        snd_pcm_recover(playback, err, 1);
+    }
 }
 
-// void synth_play(float freq) {
+void synth_close(void) {
 
-//     static int16_t buffer[
-//         FRAME_SIZE * CHANNELS];
-
-//     float inc =
-//         2.0f * M_PI * freq / RATE;
-
-//     for (int i = 0; i < FRAME_SIZE; i++) {
-
-//         float s = sinf(phase);
-
-//         int16_t v =
-//             (int16_t)(s * 2500);
-
-//         buffer[2*i] = v;
-//         buffer[2*i + 1] = v;
-
-//         phase += inc;
-
-//         if (phase > 2.0f * M_PI)
-//             phase -= 2.0f * M_PI;
-//         }
-
-    //     snd_pcm_writei(
-    //         playback,
-    //         buffer,
-    //         FRAME_SIZE);
-// }
+    if (playback) {
+        snd_pcm_drain(playback);
+        snd_pcm_close(playback);
+        playback = NULL;
+    }
+}

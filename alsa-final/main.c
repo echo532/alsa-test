@@ -23,7 +23,6 @@ int main(int argc, char **argv) {
     }
 
     if (playback_mode) {
-
         if (synth_init() < 0) {
             printf("synth init failed\n");
             return 1;
@@ -39,7 +38,9 @@ int main(int argc, char **argv) {
         malloc(sizeof(float) *
                FRAME_SIZE);
 
-    printf("Pitch tracker running...\n");
+    float current_freq = 0.0f;
+
+    printf("running...\n");
 
     while (1) {
 
@@ -47,7 +48,6 @@ int main(int argc, char **argv) {
             continue;
 
         for (int i = 0; i < FRAME_SIZE; i++) {
-
             mono[i] =
                 buf[i * 2] / 32768.0f;
         }
@@ -55,31 +55,13 @@ int main(int argc, char **argv) {
         float freq =
             detect_pitch(mono);
 
-        if (freq < 0) {
+        // update last known good pitch ONLY
+        if (freq > 0)
+            current_freq = freq;
 
-            // clear current terminal line
-            printf("\r                            \r");
-            fflush(stdout);
-
-            continue;
-        }
-
-
-        int midi =
-            freq_to_midi(freq);
-
-        const char *note =
-            midi_to_note(midi);
-
-        printf(
-            "\r%s  %.2f Hz      ",
-            note,
-            freq);
-
-        fflush(stdout);
-
-        if (playback_mode)
-            synth_play(freq);
+        // always synth if available
+        if (playback_mode && current_freq > 0.0f)
+            synth_play(current_freq);
     }
 
     return 0;
