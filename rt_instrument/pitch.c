@@ -1,55 +1,40 @@
+#include "pitch.h"
 #include "config.h"
 #include "ringbuffer.h"
 
-#include <fftw3.h>
 #include <math.h>
-#include <pthread.h>
 
 extern ringbuffer_t audio_rb;
 
 float shared_freq = 0.0f;
 
-static float in[FRAME_SIZE];
-static fftwf_complex out[FRAME_SIZE];
+/* simple autocorrelation-lite detector */
+static float buffer[FRAME_SIZE];
 
 void *pitch_thread(void *arg) {
 
-    fftwf_plan plan =
-        fftwf_plan_dft_r2c_1d(
-            FRAME_SIZE,
-            in,
-            out,
-            FFTW_MEASURE);
-
     while (1) {
 
-        rb_read_block(&audio_rb, in, FRAME_SIZE);
+        rb_read_block(&audio_rb, buffer, FRAME_SIZE);
 
-        // window
-        for (int i = 0; i < FRAME_SIZE; i++) {
-            float w = 0.5f * (1 - cosf(2*M_PI*i/(FRAME_SIZE-1)));
-            in[i] *= w;
-        }
+        int best_lag = 0;
+        float best_score = 0;
 
-        fftwf_execute(plan);
+        for (int lag = 20; lag < FRAME_SIZE / 2; lag++) {
 
-        float best = 0;
-        int best_i = 0;
+            float sum = 0;
 
-        for (int i = 1; i < FRAME_SIZE/2; i++) {
+            for (int i = 0; i < FRAME_SIZE - lag; i++) {
+                sum += buffer[i] * buffer[i + lag];
+            }
 
-            float re = out[i][0];
-            float im = out[i][1];
-
-            float mag = re*re + im*im;
-
-            if (mag > best) {
-                best = mag;
-                best_i = i;
+            if (sum > best_score) {
+                best_score = sum;
+                best_lag = lag;
             }
         }
 
-        float freq = best_i * RATE / FRAME_SIZE;
+        float freq = RATE / (float)best_lag;
 
         if (freq > MIN_FREQ && freq < MAX_FREQ)
             shared_freq = freq;
