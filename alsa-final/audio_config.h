@@ -3,7 +3,9 @@
 
 #define RATE 48000
 #define CHANNELS 2
-#define FRAME_SIZE 256
+
+// Larger FFT = much better pitch stability
+#define FRAME_SIZE 4096
 
 #define MIN_FREQ 80.0f
 #define MAX_FREQ 1200.0f
