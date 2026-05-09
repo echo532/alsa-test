@@ -4,25 +4,27 @@
 
 #include <fftw3.h>
 #include <math.h>
-
 #include <stdio.h>
 
 extern ringbuffer_t audio_rb;
 extern float shared_freq;
 
-/* FFTW state */
+/* FFTW */
 static fftwf_plan plan;
 static float *fft_in;
 static fftwf_complex *fft_out;
 
 static int initialized = 0;
 
-/* HPS buffers */
+/* buffers */
 static float mag[FRAME_SIZE / 2];
 static float hps[FRAME_SIZE / 2];
 
-/* smoothing (latency reducer) */
+/* smoothing */
 static float last_freq = 0.0f;
+
+/* debug throttle */
+static int print_counter = 0;
 
 static void init_fft() {
 
@@ -68,7 +70,7 @@ void *pitch_thread(void *arg) {
                       input,
                       FRAME_SIZE);
 
-        /* ---------------- ENERGY GATE ---------------- */
+        /* ---------------- ENERGY ---------------- */
         float energy = 0.0f;
 
         for (int i = 0; i < FRAME_SIZE; i++)
@@ -76,12 +78,12 @@ void *pitch_thread(void *arg) {
 
         energy = sqrtf(energy / FRAME_SIZE);
 
-        if (energy < 0.01f) {
+        /* IMPORTANT: debug visibility even if silent */
+        if (energy < 0.005f) {
             shared_freq = 0.0f;
-            continue;
         }
 
-        /* ---------------- COPY INTO FFT ---------------- */
+        /* ---------------- FFT ---------------- */
         for (int i = 0; i < FRAME_SIZE; i++)
             fft_in[i] = input[i];
 
@@ -89,7 +91,6 @@ void *pitch_thread(void *arg) {
 
         fftwf_execute(plan);
 
-        /* ---------------- MAGNITUDE ---------------- */
         for (int i = 0; i < FRAME_SIZE / 2; i++) {
 
             float re = fft_out[i][0];
@@ -112,7 +113,7 @@ void *pitch_thread(void *arg) {
             }
         }
 
-        /* ---------------- SEARCH RANGE ---------------- */
+        /* ---------------- SEARCH ---------------- */
         int min_bin =
             (int)(MIN_FREQ * FRAME_SIZE / RATE);
 
@@ -132,21 +133,42 @@ void *pitch_thread(void *arg) {
             }
         }
 
-        if (best < 1000.0f) {
+        float freq = 0.0f;
+
+        if (best > 1000.0f) {
+
+            freq =
+                (float)best_bin *
+                RATE /
+                FRAME_SIZE;
+
+            /* smoothing */
+            shared_freq =
+                0.6f * last_freq +
+                0.4f * freq;
+
+            last_freq = shared_freq;
+        } else {
             shared_freq = 0.0f;
-            continue;
         }
 
-        float freq =
-            (float)best_bin *
-            RATE /
-            FRAME_SIZE;
+        /* ---------------- DEBUG OUTPUT (SAFE) ---------------- */
+        print_counter++;
 
-        /* ---------------- SMOOTHING (IMPORTANT FOR LATENCY FEEL) ---------------- */
-        shared_freq =
-            0.6f * last_freq +
-            0.4f * freq;
+        if (print_counter % 10 == 0) {
 
-        last_freq = shared_freq;
+            if (shared_freq > 0.0f) {
+
+                printf("\rFreq: %.2f Hz      Energy: %.5f      ",
+                       shared_freq,
+                       energy);
+
+            } else {
+
+                printf("\rSilence / No pitch detected      ");
+            }
+
+            fflush(stdout);
+        }
     }
 }

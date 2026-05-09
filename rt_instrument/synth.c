@@ -40,8 +40,17 @@ void *synth_thread(void *arg) {
             phase += inc;
         }
 
-        snd_pcm_writei(playback,
-                       buffer,
-                       FRAME_SIZE);
+            if (shared_freq <= 0.0f) {
+
+            for (int i = 0; i < FRAME_SIZE; i++)
+                buffer[i] = 0;
+
+            snd_pcm_writei(playback,
+                        buffer,
+                        FRAME_SIZE);
+
+            continue;
+        }
     }
 }
+
