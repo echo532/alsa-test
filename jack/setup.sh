@@ -2,8 +2,7 @@
 
 set -e
 
-echo "Killing old instances..."
-killall jackd
+
 
 echo "Starting JACK server..."
 
