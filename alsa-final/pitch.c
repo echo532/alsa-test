@@ -11,6 +11,12 @@ static fftwf_complex *fft_out;
 
 static int initialized = 0;
 
+static const char *notes[] = {
+    "C","C#","D","D#",
+    "E","F","F#","G",
+    "G#","A","A#","B"
+};
+
 static void init_fft() {
 
     fft_in = fftwf_malloc(sizeof(float) * FRAME_SIZE);
@@ -47,7 +53,6 @@ float detect_pitch(float *input) {
     if (!initialized)
         init_fft();
 
-    // copy input
     for (int i = 0; i < FRAME_SIZE; i++)
         fft_in[i] = input[i];
 
@@ -57,7 +62,6 @@ float detect_pitch(float *input) {
 
     static float mag[FRAME_SIZE / 2];
 
-    // magnitude spectrum
     for (int i = 0; i < FRAME_SIZE / 2; i++) {
 
         float re = fft_out[i][0];
@@ -66,7 +70,6 @@ float detect_pitch(float *input) {
         mag[i] = sqrtf(re*re + im*im);
     }
 
-    // Harmonic Product Spectrum
     static float hps[FRAME_SIZE / 2];
 
     for (int i = 0; i < FRAME_SIZE / 2; i++)
@@ -101,7 +104,6 @@ float detect_pitch(float *input) {
         }
     }
 
-    // simple confidence gate
     if (best < 1000.0f)
         return -1;
 
@@ -111,4 +113,15 @@ float detect_pitch(float *input) {
         FRAME_SIZE;
 
     return freq;
+}
+
+int freq_to_midi(float freq) {
+
+    return (int)roundf(
+        69 + 12 * log2f(freq / 440.0f));
+}
+
+const char* midi_to_note(int midi) {
+
+    return notes[midi % 12];
 }
