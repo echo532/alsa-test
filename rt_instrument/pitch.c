@@ -6,7 +6,7 @@
 
 extern ringbuffer_t audio_rb;
 
-float shared_freq = 0.0f;
+extern float shared_freq = 0.0f;
 
 /* simple autocorrelation-lite detector */
 static float buffer[FRAME_SIZE];
