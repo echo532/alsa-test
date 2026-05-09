@@ -83,10 +83,10 @@ void synth_play(float freq) {
 
 //         if (phase > 2.0f * M_PI)
 //             phase -= 2.0f * M_PI;
-//     }
+//         }
 
-    snd_pcm_writei(
-        playback,
-        buffer,
-        FRAME_SIZE);
-}
+    //     snd_pcm_writei(
+    //         playback,
+    //         buffer,
+    //         FRAME_SIZE);
+// }
