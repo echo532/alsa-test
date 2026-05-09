@@ -9,23 +9,24 @@
 extern ringbuffer_t audio_rb;
 extern float shared_freq;
 
-/* FFTW */
+/* ---------------- FFTW ---------------- */
 static fftwf_plan plan;
 static float *fft_in;
 static fftwf_complex *fft_out;
 
 static int initialized = 0;
 
-/* buffers */
+/* ---------------- buffers ---------------- */
 static float mag[FRAME_SIZE / 2];
 static float hps[FRAME_SIZE / 2];
 
-/* smoothing */
+/* ---------------- smoothing state ---------------- */
 static float last_freq = 0.0f;
 
-/* debug throttle */
-static int print_counter = 0;
+/* ---------------- confidence memory ---------------- */
+static float last_confidence = 0.0f;
 
+/* ---------------- init ---------------- */
 static void init_fft() {
 
     fft_in = fftwf_malloc(sizeof(float) * FRAME_SIZE);
@@ -43,6 +44,7 @@ static void init_fft() {
     initialized = 1;
 }
 
+/* ---------------- window ---------------- */
 static void apply_window(float *x) {
 
     for (int i = 0; i < FRAME_SIZE; i++) {
@@ -57,6 +59,7 @@ static void apply_window(float *x) {
     }
 }
 
+/* ---------------- main pitch thread ---------------- */
 void *pitch_thread(void *arg) {
 
     if (!initialized)
@@ -70,20 +73,7 @@ void *pitch_thread(void *arg) {
                       input,
                       FRAME_SIZE);
 
-        /* ---------------- ENERGY ---------------- */
-        float energy = 0.0f;
-
-        for (int i = 0; i < FRAME_SIZE; i++)
-            energy += input[i] * input[i];
-
-        energy = sqrtf(energy / FRAME_SIZE);
-
-        /* IMPORTANT: debug visibility even if silent */
-        if (energy < 0.005f) {
-            shared_freq = 0.0f;
-        }
-
-        /* ---------------- FFT ---------------- */
+        /* ---------------- FFT INPUT ---------------- */
         for (int i = 0; i < FRAME_SIZE; i++)
             fft_in[i] = input[i];
 
@@ -91,6 +81,7 @@ void *pitch_thread(void *arg) {
 
         fftwf_execute(plan);
 
+        /* ---------------- MAGNITUDE ---------------- */
         for (int i = 0; i < FRAME_SIZE / 2; i++) {
 
             float re = fft_out[i][0];
@@ -113,7 +104,7 @@ void *pitch_thread(void *arg) {
             }
         }
 
-        /* ---------------- SEARCH ---------------- */
+        /* ---------------- SEARCH RANGE ---------------- */
         int min_bin =
             (int)(MIN_FREQ * FRAME_SIZE / RATE);
 
@@ -133,39 +124,56 @@ void *pitch_thread(void *arg) {
             }
         }
 
-        float freq = 0.0f;
+        /* ---------------- CONFIDENCE MODEL ---------------- */
+        float confidence = best;
 
-        if (best > 1000.0f) {
+        /* normalize (important for stability) */
+        confidence = confidence / 10000.0f;
 
-            freq =
-                (float)best_bin *
-                RATE /
-                FRAME_SIZE;
+        /* smooth confidence */
+        confidence = 0.7f * last_confidence +
+                     0.3f * confidence;
 
-            /* smoothing */
+        last_confidence = confidence;
+
+        /* ---------------- FREQUENCY ESTIMATE ---------------- */
+        float freq =
+            (float)best_bin *
+            RATE /
+            FRAME_SIZE;
+
+        /* ---------------- MUSICAL SMOOTHING (NO HARD GATING) ---------------- */
+
+        if (confidence > 0.002f) {
+
+            /* strong signal → trust FFT */
             shared_freq =
-                0.6f * last_freq +
-                0.4f * freq;
+                0.65f * last_freq +
+                0.35f * freq;
 
             last_freq = shared_freq;
+
         } else {
-            shared_freq = 0.0f;
+
+            /* weak signal → decay slowly instead of zeroing */
+            shared_freq *= 0.92f;
         }
 
         /* ---------------- DEBUG OUTPUT (SAFE) ---------------- */
-        print_counter++;
+        static int counter = 0;
+        counter++;
 
-        if (print_counter % 10 == 0) {
+        if (counter % 10 == 0) {
 
-            if (shared_freq > 0.0f) {
+            if (shared_freq > 0.5f) {
 
-                printf("\rFreq: %.2f Hz      Energy: %.5f      ",
+                printf("\rPitch: %.2f Hz   Confidence: %.4f   ",
                        shared_freq,
-                       energy);
+                       confidence);
 
             } else {
 
-                printf("\rSilence / No pitch detected      ");
+                printf("\r(quiet / decaying signal)        ");
             }
 
             fflush(stdout);
