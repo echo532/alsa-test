@@ -58,28 +58,32 @@ int synth_init(void) {
 }
 
 void synth_play(float freq) {
+    printf("PLAY %.2f\n", freq);
+}
 
-    static int16_t buffer[
-        FRAME_SIZE * CHANNELS];
+// void synth_play(float freq) {
 
-    float inc =
-        2.0f * M_PI * freq / RATE;
+//     static int16_t buffer[
+//         FRAME_SIZE * CHANNELS];
 
-    for (int i = 0; i < FRAME_SIZE; i++) {
+//     float inc =
+//         2.0f * M_PI * freq / RATE;
 
-        float s = sinf(phase);
+//     for (int i = 0; i < FRAME_SIZE; i++) {
 
-        int16_t v =
-            (int16_t)(s * 2500);
+//         float s = sinf(phase);
 
-        buffer[2*i] = v;
-        buffer[2*i + 1] = v;
+//         int16_t v =
+//             (int16_t)(s * 2500);
 
-        phase += inc;
+//         buffer[2*i] = v;
+//         buffer[2*i + 1] = v;
 
-        if (phase > 2.0f * M_PI)
-            phase -= 2.0f * M_PI;
-    }
+//         phase += inc;
+
+//         if (phase > 2.0f * M_PI)
+//             phase -= 2.0f * M_PI;
+//     }
 
     snd_pcm_writei(
         playback,
