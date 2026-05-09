@@ -4,21 +4,23 @@
 
 #include <math.h>
 #include <string.h>
+#include <stdio.h>
 
 extern ringbuffer_t audio_rb;
 extern float shared_freq;
 
-/* analysis buffers */
+/* buffers */
 static float buffer[FRAME_SIZE];
 static float real[FRAME_SIZE];
 static float imag[FRAME_SIZE];
 
 #define VAD_THRESHOLD 0.01f
 
-/* ---------------------------------------
-   VERY SIMPLE DFT-STYLE FFT (no libs)
-   (fast enough at FRAME_SIZE=256)
-   --------------------------------------- */
+/* print throttling */
+static float last_print_freq = 0.0f;
+static int frame_counter = 0;
+
+/* ---------------- FFT (simple DFT version) ---------------- */
 static void compute_spectrum() {
 
     memset(real, 0, sizeof(real));
@@ -51,9 +53,7 @@ void *pitch_thread(void *arg) {
                       buffer,
                       FRAME_SIZE);
 
-        /* -------------------------
-           1. VAD (energy gate)
-           ------------------------- */
+        /* ---------------- ENERGY GATE ---------------- */
         float energy = 0.0f;
 
         for (int i = 0; i < FRAME_SIZE; i++) {
@@ -67,9 +67,7 @@ void *pitch_thread(void *arg) {
             continue;
         }
 
-        /* -------------------------
-           2. FFT / DFT magnitude
-           ------------------------- */
+        /* ---------------- FFT ---------------- */
         compute_spectrum();
 
         float best_mag = 0.0f;
@@ -87,21 +85,40 @@ void *pitch_thread(void *arg) {
             }
         }
 
-        /* -------------------------
-           3. BIN → FREQUENCY
-           ------------------------- */
         float freq =
             (float)best_bin * RATE / FRAME_SIZE;
 
-        /* -------------------------
-           4. VALIDATION
-           ------------------------- */
-        if (freq > MIN_FREQ &&
-            freq < MAX_FREQ) {
-
+        /* ---------------- VALIDATION ---------------- */
+        if (freq > MIN_FREQ && freq < MAX_FREQ) {
             shared_freq = freq;
         } else {
             shared_freq = 0.0f;
+        }
+
+        /* ---------------- SAFE PRINTING ---------------- */
+
+        frame_counter++;
+
+        /* print ~15 times/sec max (FRAME_SIZE=256 → ~187 fps) */
+        if (frame_counter % 12 == 0) {
+
+            if (shared_freq > 0.0f) {
+
+                /* reduce spam: only print if changed meaningfully */
+                if (fabsf(shared_freq - last_print_freq) > 1.0f) {
+
+                    printf("\rPitch: %.2f Hz        ",
+                           shared_freq);
+
+                    fflush(stdout);
+
+                    last_print_freq = shared_freq;
+                }
+
+            } else {
+                printf("\rSilence              ");
+                fflush(stdout);
+            }
         }
     }
 }
