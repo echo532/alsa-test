@@ -2,14 +2,14 @@
 #define RINGBUFFER_H
 
 typedef struct {
-    float *buffer;
+    float *buf;
     int size;
-    int write_idx;
-    int read_idx;
+    int w;
+    int r;
 } ringbuffer_t;
 
 void rb_init(ringbuffer_t *rb, int size);
 void rb_write(ringbuffer_t *rb, float v);
-int rb_read_block(ringbuffer_t *rb, float *out, int n);
+int rb_read(ringbuffer_t *rb, float *out, int n);
 
 #endif

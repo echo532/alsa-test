@@ -3,7 +3,6 @@
 #include "ringbuffer.h"
 
 #include <alsa/asoundlib.h>
-#include <stdio.h>
 
 extern ringbuffer_t audio_rb;
 
@@ -19,7 +18,7 @@ void *audio_thread(void *arg) {
     snd_pcm_set_params(capture,
         SND_PCM_FORMAT_S16_LE,
         SND_PCM_ACCESS_RW_INTERLEAVED,
-        CHANNELS,
+        1,
         RATE,
         1,
         20000);
@@ -28,11 +27,12 @@ void *audio_thread(void *arg) {
 
     while (1) {
 
-        snd_pcm_readi(capture, buf, FRAME_SIZE);
+        snd_pcm_readi(capture,
+                      buf,
+                      FRAME_SIZE);
 
-        for (int i = 0; i < FRAME_SIZE; i++) {
+        for (int i = 0; i < FRAME_SIZE; i++)
             rb_write(&audio_rb,
                      buf[i] / 32768.0f);
-        }
     }
 }

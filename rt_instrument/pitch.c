@@ -9,21 +9,17 @@
 extern ringbuffer_t audio_rb;
 extern float shared_freq;
 
-/* ---------------- FFTW ---------------- */
+/* FFTW */
 static fftwf_plan plan;
 static float *fft_in;
 static fftwf_complex *fft_out;
 
 static int initialized = 0;
 
-/* ---------------- notes ---------------- */
-static const char *notes[] = {
-    "C","C#","D","D#",
-    "E","F","F#","G",
-    "G#","A","A#","B"
-};
+/* buffers */
+static float mag[FRAME_SIZE / 2];
+static float hps[FRAME_SIZE / 2];
 
-/* ---------------- init ---------------- */
 static void init_fft() {
 
     fft_in = fftwf_malloc(sizeof(float) * FRAME_SIZE);
@@ -41,7 +37,6 @@ static void init_fft() {
     initialized = 1;
 }
 
-/* ---------------- window ---------------- */
 static void apply_window(float *x) {
 
     for (int i = 0; i < FRAME_SIZE; i++) {
@@ -56,11 +51,7 @@ static void apply_window(float *x) {
     }
 }
 
-/* ---------------- core detector ---------------- */
-float detect_pitch(float *input) {
-
-    if (!initialized)
-        init_fft();
+float detect(float *input) {
 
     for (int i = 0; i < FRAME_SIZE; i++)
         fft_in[i] = input[i];
@@ -69,10 +60,6 @@ float detect_pitch(float *input) {
 
     fftwf_execute(plan);
 
-    static float mag[FRAME_SIZE / 2];
-    static float hps[FRAME_SIZE / 2];
-
-    /* magnitude */
     for (int i = 0; i < FRAME_SIZE / 2; i++) {
 
         float re = fft_out[i][0];
@@ -81,7 +68,6 @@ float detect_pitch(float *input) {
         mag[i] = sqrtf(re*re + im*im);
     }
 
-    /* HPS */
     for (int i = 0; i < FRAME_SIZE / 2; i++)
         hps[i] = mag[i];
 
@@ -104,9 +90,7 @@ float detect_pitch(float *input) {
     float best = 0.0f;
     int best_bin = 0;
 
-    for (int i = min_bin;
-         i < max_bin;
-         i++) {
+    for (int i = min_bin; i < max_bin; i++) {
 
         if (hps[i] > best) {
             best = hps[i];
@@ -115,47 +99,30 @@ float detect_pitch(float *input) {
     }
 
     if (best < 1000.0f)
-        return -1.0f;
+        return -1;
 
-    float freq =
-        (float)best_bin *
-        RATE /
-        FRAME_SIZE;
-
-    return freq;
+    return best_bin * (float)RATE / FRAME_SIZE;
 }
 
-/* ---------------- thread wrapper ---------------- */
 void *pitch_thread(void *arg) {
-
-    float buffer[FRAME_SIZE];
 
     if (!initialized)
         init_fft();
 
+    float buf[FRAME_SIZE];
+
     while (1) {
 
-        rb_read_block(&audio_rb,
-                      buffer,
-                      FRAME_SIZE);
+        rb_read(&audio_rb, buf, FRAME_SIZE);
 
-        float freq =
-            detect_pitch(buffer);
+        float freq = detect(buf);
 
-        /* ---------------- output ---------------- */
-        if (freq > 0.0f) {
+        shared_freq = freq;
 
-            shared_freq = freq;
-
-            printf("\rPitch: %.2f Hz        ", freq);
-            fflush(stdout);
-
-        } else {
-
-            shared_freq = 0.0f;
-
-            printf("\r(no pitch)              ");
-            fflush(stdout);
-        }
+        /* lightweight debug */
+        if (freq > 0)
+            printf("\rPitch: %.2f Hz      ", freq);
+        else
+            printf("\r(no pitch)            ");
     }
 }
