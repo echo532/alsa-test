@@ -1,5 +1,4 @@
 #include "pitch.h"
-#include "audio_config.h"
 #include "config.h"
 #include "ringbuffer.h"
 
