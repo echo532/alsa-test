@@ -72,7 +72,7 @@ int main(int argc, char **argv) {
             midi_to_note(midi);
 
         printf(
-            "\n%s  %.2f Hz      ",
+            "\r%s  %.2f Hz      ",
             note,
             freq);
 
