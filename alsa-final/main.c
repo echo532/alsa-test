@@ -55,8 +55,15 @@ int main(int argc, char **argv) {
         float freq =
             detect_pitch(mono);
 
-        if (freq < 0)
+        if (freq < 0) {
+
+            // clear current terminal line
+            printf("\r                            \r");
+            fflush(stdout);
+
             continue;
+        }
+
 
         int midi =
             freq_to_midi(freq);
