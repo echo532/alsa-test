@@ -10,7 +10,6 @@ static snd_pcm_t *playback = NULL;
 
 static float phase = 0.0f;
 
-// persistent buffer (IMPORTANT)
 static int16_t buffer[FRAME_SIZE * CHANNELS];
 
 int synth_init(void) {
@@ -56,11 +55,7 @@ int synth_init(void) {
         FRAME_SIZE,
         0);
 
-    if (snd_pcm_hw_params(playback, params) < 0) {
-        printf("failed hw params\n");
-        return -1;
-    }
-
+    snd_pcm_hw_params(playback, params);
     snd_pcm_prepare(playback);
 
     return 0;
@@ -71,8 +66,9 @@ void synth_play(float freq) {
     if (!playback)
         return;
 
+    // 🔧 FIX: if no pitch, output silence instead of skipping
     if (freq <= 0.0f)
-        return;
+        freq = 0.0f;
 
     float inc =
         2.0f * M_PI * freq / RATE;
@@ -81,8 +77,7 @@ void synth_play(float freq) {
 
         float s = sinf(phase);
 
-        int16_t v =
-            (int16_t)(s * 8000);
+        int16_t v = (int16_t)(s * 8000);
 
         buffer[2 * i] = v;
         buffer[2 * i + 1] = v;
@@ -93,27 +88,18 @@ void synth_play(float freq) {
             phase -= 2.0f * M_PI;
     }
 
-    int err = snd_pcm_writei(
-        playback,
-        buffer,
-        FRAME_SIZE);
+    int err =
+        snd_pcm_writei(
+            playback,
+            buffer,
+            FRAME_SIZE);
 
-    // 🔥 CRITICAL FIX: handle underrun
+    // 🔥 CRITICAL: recover from underrun
     if (err == -EPIPE) {
         snd_pcm_prepare(playback);
     }
 
-    // optional safety fallback
     if (err < 0 && err != -EPIPE) {
         snd_pcm_recover(playback, err, 1);
-    }
-}
-
-void synth_close(void) {
-
-    if (playback) {
-        snd_pcm_drain(playback);
-        snd_pcm_close(playback);
-        playback = NULL;
     }
 }

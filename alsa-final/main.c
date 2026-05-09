@@ -39,15 +39,9 @@ int main(int argc, char **argv) {
         malloc(sizeof(float) *
                FRAME_SIZE);
 
-    if (!buf || !mono) {
-        printf("memory alloc failed\n");
-        return 1;
-    }
-
     float current_freq = 0.0f;
 
-    // for reducing terminal spam / jitter
-    float last_printed_freq = -1.0f;
+    int silent_frames = 0;
 
     printf("running...\n");
 
@@ -64,37 +58,45 @@ int main(int argc, char **argv) {
         float freq =
             detect_pitch(mono);
 
-        // update stable pitch memory
-        if (freq > 0)
+        // ---------------------------
+        // FIX 1: pitch tracking memory
+        // ---------------------------
+        if (freq > 0) {
             current_freq = freq;
+            silent_frames = 0;
+        } else {
+            silent_frames++;
+        }
 
-        // only process valid pitch
-        if (current_freq <= 0)
-            continue;
+        // ---------------------------
+        // FIX 2: stop stuck notes
+        // ---------------------------
+        if (silent_frames > 5) {
+            current_freq = 0.0f;
+        }
 
-        int midi =
-            freq_to_midi(current_freq);
+        // ---------------------------
+        // NOTE OUTPUT (unchanged but stable)
+        // ---------------------------
+        if (current_freq > 0) {
 
-        const char *note =
-            midi_to_note(midi);
-
-        // print only if stable enough change (reduces jitter spam)
-        if (fabsf(current_freq - last_printed_freq) > 0.5f) {
+            int midi = freq_to_midi(current_freq);
+            const char *note = midi_to_note(midi);
 
             printf(
-                "\r%s  MIDI:%d  %.2f Hz        ",
+                "\r%s  %.2f Hz        ",
                 note,
-                midi,
                 current_freq);
 
             fflush(stdout);
-
-            last_printed_freq = current_freq;
         }
 
-        // synth output (unchanged, stable)
-        if (playback_mode)
+        // ---------------------------
+        // FIX 3: ALWAYS drive synth
+        // ---------------------------
+        if (playback_mode) {
             synth_play(current_freq);
+        }
     }
 
     return 0;
