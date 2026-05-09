@@ -2,165 +2,151 @@
 #include "config.h"
 #include "ringbuffer.h"
 
+#include <fftw3.h>
 #include <math.h>
-#include <string.h>
+
 #include <stdio.h>
 
 extern ringbuffer_t audio_rb;
 extern float shared_freq;
 
-/* ---------------- buffers ---------------- */
-static float buffer[FRAME_SIZE];
-static float windowed[FRAME_SIZE];
+/* FFTW state */
+static fftwf_plan plan;
+static float *fft_in;
+static fftwf_complex *fft_out;
 
-#define VAD_THRESHOLD 0.01f
+static int initialized = 0;
 
-/* ---------------- smoothing ---------------- */
+/* HPS buffers */
+static float mag[FRAME_SIZE / 2];
+static float hps[FRAME_SIZE / 2];
+
+/* smoothing (latency reducer) */
 static float last_freq = 0.0f;
 
-/* ---------------- Hann window ---------------- */
-static void apply_window() {
+static void init_fft() {
+
+    fft_in = fftwf_malloc(sizeof(float) * FRAME_SIZE);
+
+    fft_out = fftwf_malloc(
+        sizeof(fftwf_complex) *
+        (FRAME_SIZE / 2 + 1));
+
+    plan = fftwf_plan_dft_r2c_1d(
+        FRAME_SIZE,
+        fft_in,
+        fft_out,
+        FFTW_MEASURE);
+
+    initialized = 1;
+}
+
+static void apply_window(float *x) {
 
     for (int i = 0; i < FRAME_SIZE; i++) {
+
         float w =
-            0.5f * (1.0f - cosf(2.0f * M_PI * i / (FRAME_SIZE - 1)));
+            0.5f *
+            (1.0f - cosf(
+                2.0f * M_PI * i /
+                (FRAME_SIZE - 1)));
 
-        windowed[i] = buffer[i] * w;
+        x[i] *= w;
     }
 }
 
-/* ---------------- energy gate ---------------- */
-static float compute_energy() {
-
-    float e = 0.0f;
-
-    for (int i = 0; i < FRAME_SIZE; i++) {
-        e += windowed[i] * windowed[i];
-    }
-
-    return sqrtf(e / FRAME_SIZE);
-}
-
-/* ---------------- FFT (simple DFT magnitude) ---------------- */
-static void compute_spectrum(float *mag) {
-
-    for (int k = 0; k < FRAME_SIZE / 2; k++) {
-
-        float re = 0.0f;
-        float im = 0.0f;
-
-        for (int n = 0; n < FRAME_SIZE; n++) {
-
-            float phase =
-                2.0f * M_PI * k * n / FRAME_SIZE;
-
-            re += windowed[n] * cosf(phase);
-            im -= windowed[n] * sinf(phase);
-        }
-
-        mag[k] = re * re + im * im;
-    }
-}
-
-/* ---------------- parabolic interpolation ---------------- */
-static float refine_peak(int k, float *mag) {
-
-    if (k <= 0 || k >= FRAME_SIZE / 2 - 1)
-        return k;
-
-    float a = mag[k - 1];
-    float b = mag[k];
-    float c = mag[k + 1];
-
-    float offset =
-        0.5f * (a - c) / (a - 2 * b + c);
-
-    return (float)k + offset;
-}
-
-/* ---------------- harmonic correction ---------------- */
-static float harmonic_fix(float freq) {
-
-    float candidates[3] = {
-        freq,
-        freq / 2.0f,
-        freq / 3.0f
-    };
-
-    float best = freq;
-
-    for (int i = 0; i < 3; i++) {
-
-        float f = candidates[i];
-
-        if (f >= MIN_FREQ && f <= MAX_FREQ) {
-            best = f;
-            break;
-        }
-    }
-
-    return best;
-}
-
-/* ---------------- main thread ---------------- */
 void *pitch_thread(void *arg) {
 
-    float mag[FRAME_SIZE / 2];
+    if (!initialized)
+        init_fft();
+
+    float input[FRAME_SIZE];
 
     while (1) {
 
         rb_read_block(&audio_rb,
-                      buffer,
+                      input,
                       FRAME_SIZE);
 
-        /* ---------------- window ---------------- */
-        apply_window();
+        /* ---------------- ENERGY GATE ---------------- */
+        float energy = 0.0f;
 
-        /* ---------------- VAD ---------------- */
-        float energy = compute_energy();
+        for (int i = 0; i < FRAME_SIZE; i++)
+            energy += input[i] * input[i];
 
-        if (energy < VAD_THRESHOLD) {
+        energy = sqrtf(energy / FRAME_SIZE);
+
+        if (energy < 0.01f) {
             shared_freq = 0.0f;
             continue;
         }
 
-        /* ---------------- spectrum ---------------- */
-        compute_spectrum(mag);
+        /* ---------------- COPY INTO FFT ---------------- */
+        for (int i = 0; i < FRAME_SIZE; i++)
+            fft_in[i] = input[i];
 
-        /* ---------------- peak search ---------------- */
-        int best_k = 1;
-        float best_v = 0.0f;
+        apply_window(fft_in);
 
-        for (int k = 1; k < FRAME_SIZE / 2; k++) {
+        fftwf_execute(plan);
 
-            if (mag[k] > best_v) {
-                best_v = mag[k];
-                best_k = k;
+        /* ---------------- MAGNITUDE ---------------- */
+        for (int i = 0; i < FRAME_SIZE / 2; i++) {
+
+            float re = fft_out[i][0];
+            float im = fft_out[i][1];
+
+            mag[i] = sqrtf(re*re + im*im);
+        }
+
+        /* ---------------- HPS ---------------- */
+        for (int i = 0; i < FRAME_SIZE / 2; i++)
+            hps[i] = mag[i];
+
+        for (int h = 2; h <= 4; h++) {
+
+            for (int i = 0;
+                 i < FRAME_SIZE / (2 * h);
+                 i++) {
+
+                hps[i] *= mag[i * h];
             }
         }
 
-        /* ---------------- refine peak ---------------- */
-        float refined =
-            refine_peak(best_k, mag);
+        /* ---------------- SEARCH RANGE ---------------- */
+        int min_bin =
+            (int)(MIN_FREQ * FRAME_SIZE / RATE);
+
+        int max_bin =
+            (int)(MAX_FREQ * FRAME_SIZE / RATE);
+
+        float best = 0.0f;
+        int best_bin = 0;
+
+        for (int i = min_bin;
+             i < max_bin;
+             i++) {
+
+            if (hps[i] > best) {
+                best = hps[i];
+                best_bin = i;
+            }
+        }
+
+        if (best < 1000.0f) {
+            shared_freq = 0.0f;
+            continue;
+        }
 
         float freq =
-            refined * RATE / FRAME_SIZE;
+            (float)best_bin *
+            RATE /
+            FRAME_SIZE;
 
-        /* ---------------- harmonic correction ---------------- */
-        freq = harmonic_fix(freq);
+        /* ---------------- SMOOTHING (IMPORTANT FOR LATENCY FEEL) ---------------- */
+        shared_freq =
+            0.6f * last_freq +
+            0.4f * freq;
 
-        /* ---------------- validation ---------------- */
-        if (freq >= MIN_FREQ &&
-            freq <= MAX_FREQ) {
-
-            /* ---------------- smoothing ---------------- */
-            shared_freq =
-                0.7f * last_freq +
-                0.3f * freq;
-
-            last_freq = shared_freq;
-        } else {
-            shared_freq = 0.0f;
-        }
+        last_freq = shared_freq;
     }
 }
