@@ -16,7 +16,7 @@ sleep 2
 echo "Starting harmonizer..."
 
 # Start harmonizer in background
-./harmonizer 1.5 &
+./harmonizer 1.5 > harmonizer.log 2>&1 &
 HARMONIZER_PID=$!
 
 # Give harmonizer time to register JACK ports
