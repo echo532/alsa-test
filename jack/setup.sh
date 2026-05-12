@@ -7,7 +7,7 @@ set -e
 echo "Starting JACK server..."
 
 # Start JACK in background
-jackd -d alsa -P hw:1,0 -C hw:2,0 -r 48000 -p 256 -n 3 &
+jackd -d alsa -P hw:2,0 -C hw:1,0 -r 48000 -p 256 -n 3 &
 JACK_PID=$!
 
 # Give JACK time to initialize
