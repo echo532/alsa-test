@@ -63,7 +63,7 @@ int main(int argc, char *argv[])
     printf("Gain: %.2f\n", gain);
 
     client = jack_client_open(
-        "passthrough",
+        "harmonizer",
         JackNullOption,
         NULL
     );
