@@ -9,7 +9,9 @@
 #define SR 48000
 #define BUFFER_SIZE 2048
 #define HOP_SIZE 256
-#define MAX_OSC 32
+#define MAX_OSC 16
+
+#define YIN_THRESHOLD 0.12f
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -30,7 +32,7 @@ jack_port_t *output_port;
 volatile sig_atomic_t running = 1;
 
 // ============================================================
-// ANALYSIS BUFFER (circular)
+// AUDIO BUFFER
 // ============================================================
 
 float analysis_buffer[BUFFER_SIZE];
@@ -57,7 +59,7 @@ int osc_count = 0;
 float harmony_ratio = 1.5f;
 
 // ============================================================
-// UTILS
+// UTIL
 // ============================================================
 
 float clamp(float x, float a, float b)
@@ -95,52 +97,111 @@ void get_analysis_frame(float *dst)
 }
 
 // ============================================================
-// PITCH DETECTION
+// HANN WINDOW
 // ============================================================
 
-float detect_pitch(float *buf, int size)
+void apply_hann(float *buf, int size)
 {
-    float best_corr = 0.0f;
-    int best_lag = 0;
+    for (int i = 0; i < size; i++) {
 
-    int min_lag = SR / 1000; // 1000 Hz
-    int max_lag = SR / 80;   // 80 Hz
+        float w =
+            0.5f *
+            (1.0f - cosf((2.0f * M_PI * i) / (size - 1)));
 
-    for (int lag = min_lag; lag < max_lag; lag++) {
+        buf[i] *= w;
+    }
+}
 
-        float corr = 0.0f;
-        float norm1 = 0.0f;
-        float norm2 = 0.0f;
+// ============================================================
+// YIN PITCH DETECTOR
+// ============================================================
 
-        for (int i = 0; i < size - lag; i++) {
+float detect_pitch_yin(float *buf, int size)
+{
+    static float diff[BUFFER_SIZE / 2];
+    static float cmnd[BUFFER_SIZE / 2];
 
-            float a = buf[i];
-            float b = buf[i + lag];
+    int tau_max = BUFFER_SIZE / 2;
+    int tau_estimate = -1;
 
-            corr += a * b;
-            norm1 += a * a;
-            norm2 += b * b;
-        }
+    // --------------------------------------------------------
+    // Difference function
+    // --------------------------------------------------------
 
-        float norm = sqrtf(norm1 * norm2);
+    for (int tau = 0; tau < tau_max; tau++) {
 
-        if (norm > 0.0f)
-            corr /= norm;
+        diff[tau] = 0.0f;
 
-        if (corr > best_corr) {
-            best_corr = corr;
-            best_lag = lag;
+        for (int i = 0; i < tau_max; i++) {
+
+            float delta = buf[i] - buf[i + tau];
+
+            diff[tau] += delta * delta;
         }
     }
 
-    // reject weak detections
-    if (best_corr < 0.35f)
+    // --------------------------------------------------------
+    // Cumulative mean normalized difference
+    // --------------------------------------------------------
+
+    cmnd[0] = 1.0f;
+
+    float running_sum = 0.0f;
+
+    for (int tau = 1; tau < tau_max; tau++) {
+
+        running_sum += diff[tau];
+
+        if (running_sum == 0.0f)
+            cmnd[tau] = 1.0f;
+        else
+            cmnd[tau] =
+                diff[tau] *
+                tau /
+                running_sum;
+    }
+
+    // --------------------------------------------------------
+    // Absolute threshold
+    // --------------------------------------------------------
+
+    for (int tau = SR / 1000; tau < SR / 50; tau++) {
+
+        if (cmnd[tau] < YIN_THRESHOLD) {
+
+            while (tau + 1 < tau_max &&
+                   cmnd[tau + 1] < cmnd[tau]) {
+                tau++;
+            }
+
+            tau_estimate = tau;
+            break;
+        }
+    }
+
+    if (tau_estimate == -1)
         return 0.0f;
 
-    if (best_lag == 0)
-        return 0.0f;
+    // --------------------------------------------------------
+    // Parabolic interpolation
+    // --------------------------------------------------------
 
-    return (float)SR / (float)best_lag;
+    if (tau_estimate > 0 &&
+        tau_estimate < tau_max - 1) {
+
+        float s0 = cmnd[tau_estimate - 1];
+        float s1 = cmnd[tau_estimate];
+        float s2 = cmnd[tau_estimate + 1];
+
+        float better_tau =
+            tau_estimate +
+            (s2 - s0) /
+            (2.0f * (2.0f * s1 - s2 - s0));
+
+        return (float)SR / better_tau;
+    }
+
+    return (float)SR / (float)tau_estimate;
 }
 
 // ============================================================
@@ -150,6 +211,7 @@ float detect_pitch(float *buf, int size)
 void update_oscillators(float f0, float rms)
 {
     // silence gate
+
     if (rms < 0.01f || f0 <= 0.0f) {
 
         for (int i = 0; i < osc_count; i++)
@@ -160,20 +222,26 @@ void update_oscillators(float f0, float rms)
 
     int count = 0;
 
-    for (int i = 1; i <= 8; i++) {
+    // only a few harmonics for cleaner sound
 
-        float freq = f0 * harmony_ratio * i;
+    for (int i = 1; i <= 6; i++) {
+
+        float freq =
+            f0 *
+            harmony_ratio *
+            i;
 
         if (freq > SR * 0.45f)
             break;
 
         osc_bank[count].target_freq = freq;
-        osc_bank[count].target_amp = 0.15f / (float)i;
+
+        osc_bank[count].target_amp =
+            0.18f / (float)i;
 
         count++;
     }
 
-    // fade out unused oscillators
     for (int i = count; i < osc_count; i++)
         osc_bank[i].target_amp = 0.0f;
 
@@ -190,20 +258,34 @@ void analyze()
 
     get_analysis_frame(frame);
 
-    // remove DC offset
+    // remove DC
+
     float mean = 0.0f;
 
     for (int i = 0; i < BUFFER_SIZE; i++)
         mean += frame[i];
 
-    mean /= (float)BUFFER_SIZE;
+    mean /= BUFFER_SIZE;
 
     for (int i = 0; i < BUFFER_SIZE; i++)
         frame[i] -= mean;
 
+    // apply window
+
+    apply_hann(frame, BUFFER_SIZE);
+
+    // RMS gate
+
     float rms = compute_rms(frame, BUFFER_SIZE);
 
-    float f0 = detect_pitch(frame, BUFFER_SIZE);
+    // YIN pitch detection
+
+    float f0 = detect_pitch_yin(frame, BUFFER_SIZE);
+
+    // reject unrealistic pitches
+
+    if (f0 < 50.0f || f0 > 1000.0f)
+        f0 = 0.0f;
 
     update_oscillators(f0, rms);
 }
@@ -220,15 +302,23 @@ float synth_sample()
 
         Osc *o = &osc_bank[i];
 
-        // smooth frequency
-        o->freq += 0.001f * (o->target_freq - o->freq);
+        // smoother interpolation
 
-        // smooth amplitude
-        o->amp += 0.001f * (o->target_amp - o->amp);
+        o->freq +=
+            0.002f *
+            (o->target_freq - o->freq);
+
+        o->amp +=
+            0.002f *
+            (o->target_amp - o->amp);
 
         out += sinf(o->phase) * o->amp;
 
-        o->phase += 2.0f * M_PI * o->freq / (float)SR;
+        o->phase +=
+            2.0f *
+            M_PI *
+            o->freq /
+            (float)SR;
 
         if (o->phase >= 2.0f * M_PI)
             o->phase -= 2.0f * M_PI;
@@ -253,7 +343,8 @@ int process(jack_nframes_t nframes, void *arg)
 
         float sample = in[i];
 
-        // write circular buffer
+        // circular analysis buffer
+
         analysis_buffer[write_pos] = sample;
 
         write_pos++;
@@ -262,14 +353,19 @@ int process(jack_nframes_t nframes, void *arg)
         hop_counter++;
 
         if (hop_counter >= HOP_SIZE) {
+
             analyze();
+
             hop_counter = 0;
         }
 
         float wet = synth_sample();
 
         // dry/wet mix
-        out[i] = sample * 0.7f + wet * 0.5f;
+
+        out[i] =
+            sample * 0.75f +
+            wet * 0.45f;
     }
 
     return 0;
@@ -299,31 +395,37 @@ int main(int argc, char *argv[])
         harmony_ratio = atof(argv[1]);
 
     printf("====================================\n");
-    printf("Simple JACK Harmonizer\n");
+    printf("YIN JACK Harmonizer\n");
     printf("Harmony Ratio: %.2f\n", harmony_ratio);
     printf("CTRL+C to stop\n");
     printf("====================================\n");
 
-    // signal handlers
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
-    // create JACK client
     client = jack_client_open(
         "harmonizer",
         JackNullOption,
         NULL);
 
     if (!client) {
-        fprintf(stderr, "Failed to connect to JACK\n");
+
+        fprintf(stderr,
+                "Failed to connect to JACK\n");
+
         return 1;
     }
 
-    // callbacks
-    jack_set_process_callback(client, process, NULL);
-    jack_on_shutdown(client, jack_shutdown, NULL);
+    jack_set_process_callback(
+        client,
+        process,
+        NULL);
 
-    // ports
+    jack_on_shutdown(
+        client,
+        jack_shutdown,
+        NULL);
+
     input_port = jack_port_register(
         client,
         "input",
@@ -340,17 +442,18 @@ int main(int argc, char *argv[])
 
     if (!input_port || !output_port) {
 
-        fprintf(stderr, "Failed to register JACK ports\n");
+        fprintf(stderr,
+                "Failed to register ports\n");
 
         jack_client_close(client);
 
         return 1;
     }
 
-    // activate JACK
     if (jack_activate(client)) {
 
-        fprintf(stderr, "Failed to activate JACK client\n");
+        fprintf(stderr,
+                "Failed to activate JACK\n");
 
         jack_client_close(client);
 
@@ -359,51 +462,14 @@ int main(int argc, char *argv[])
 
     printf("Running...\n");
 
-    // responsive loop
     while (running) {
         usleep(10000);
     }
 
     printf("\nStopping...\n");
 
-    // stop processing
     jack_deactivate(client);
 
-    // disconnect input connections
-    const char **connections;
-
-    connections = jack_port_get_connections(input_port);
-
-    if (connections) {
-
-        for (int i = 0; connections[i]; i++) {
-
-            jack_disconnect(
-                client,
-                connections[i],
-                jack_port_name(input_port));
-        }
-
-        free(connections);
-    }
-
-    // disconnect output connections
-    connections = jack_port_get_connections(output_port);
-
-    if (connections) {
-
-        for (int i = 0; connections[i]; i++) {
-
-            jack_disconnect(
-                client,
-                jack_port_name(output_port),
-                connections[i]);
-        }
-
-        free(connections);
-    }
-
-    // close JACK
     jack_client_close(client);
 
     printf("Exited cleanly.\n");
