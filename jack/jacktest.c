@@ -1,14 +1,20 @@
 #include <jack/jack.h>
 #include <math.h>
+#include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <signal.h>
 #include <unistd.h>
 
 #define SR 48000
-#define BUFFER_SIZE 2048
-#define HOP_SIZE 256
+
+// TEMPORARY FIXES:
+// smaller buffer + slower analysis
+
+#define BUFFER_SIZE 1024
+#define HOP_SIZE 1024
+
 #define MAX_OSC 16
 
 #define YIN_THRESHOLD 0.12f
@@ -29,21 +35,39 @@ jack_port_t *output_port;
 // RUN STATE
 // ============================================================
 
-volatile sig_atomic_t running = 1;
+volatile int running = 1;
 
 // ============================================================
-// AUDIO BUFFER
+// ANALYSIS BUFFER
 // ============================================================
 
 float analysis_buffer[BUFFER_SIZE];
+
 int write_pos = 0;
 int hop_counter = 0;
+
+// worker thread synchronization
+
+pthread_t analysis_thread;
+
+pthread_mutex_t analysis_mutex =
+    PTHREAD_MUTEX_INITIALIZER;
+
+volatile int analysis_ready = 0;
+
+// ============================================================
+// PITCH STATE
+// ============================================================
+
+volatile float detected_f0 = 0.0f;
+volatile float detected_rms = 0.0f;
 
 // ============================================================
 // OSCILLATORS
 // ============================================================
 
 typedef struct {
+
     float freq;
     float target_freq;
 
@@ -51,10 +75,16 @@ typedef struct {
     float target_amp;
 
     float phase;
+
 } Osc;
 
 Osc osc_bank[MAX_OSC];
+
 int osc_count = 0;
+
+// ============================================================
+// USER PARAMS
+// ============================================================
 
 float harmony_ratio = 1.5f;
 
@@ -84,19 +114,6 @@ float compute_rms(float *buf, int size)
 }
 
 // ============================================================
-// COPY CIRCULAR BUFFER
-// ============================================================
-
-void get_analysis_frame(float *dst)
-{
-    int idx = write_pos;
-
-    for (int i = 0; i < BUFFER_SIZE; i++) {
-        dst[i] = analysis_buffer[(idx + i) % BUFFER_SIZE];
-    }
-}
-
-// ============================================================
 // HANN WINDOW
 // ============================================================
 
@@ -106,14 +123,16 @@ void apply_hann(float *buf, int size)
 
         float w =
             0.5f *
-            (1.0f - cosf((2.0f * M_PI * i) / (size - 1)));
+            (1.0f - cosf(
+                (2.0f * M_PI * i) /
+                (float)(size - 1)));
 
         buf[i] *= w;
     }
 }
 
 // ============================================================
-// YIN PITCH DETECTOR
+// YIN
 // ============================================================
 
 float detect_pitch_yin(float *buf, int size)
@@ -122,33 +141,37 @@ float detect_pitch_yin(float *buf, int size)
     static float cmnd[BUFFER_SIZE / 2];
 
     int tau_max = BUFFER_SIZE / 2;
+
     int tau_estimate = -1;
 
-    // --------------------------------------------------------
-    // Difference function
+    // TEMPORARY FIX:
+    // narrower vocal range
+
+    int min_tau = SR / 500;
+    int max_tau = SR / 80;
+
     // --------------------------------------------------------
 
-    for (int tau = 0; tau < tau_max; tau++) {
+    for (int tau = min_tau; tau < max_tau; tau++) {
 
         diff[tau] = 0.0f;
 
         for (int i = 0; i < tau_max; i++) {
 
-            float delta = buf[i] - buf[i + tau];
+            float delta =
+                buf[i] - buf[i + tau];
 
             diff[tau] += delta * delta;
         }
     }
 
     // --------------------------------------------------------
-    // Cumulative mean normalized difference
-    // --------------------------------------------------------
 
     cmnd[0] = 1.0f;
 
     float running_sum = 0.0f;
 
-    for (int tau = 1; tau < tau_max; tau++) {
+    for (int tau = min_tau; tau < max_tau; tau++) {
 
         running_sum += diff[tau];
 
@@ -162,19 +185,19 @@ float detect_pitch_yin(float *buf, int size)
     }
 
     // --------------------------------------------------------
-    // Absolute threshold
-    // --------------------------------------------------------
 
-    for (int tau = SR / 1000; tau < SR / 50; tau++) {
+    for (int tau = min_tau; tau < max_tau; tau++) {
 
         if (cmnd[tau] < YIN_THRESHOLD) {
 
-            while (tau + 1 < tau_max &&
+            while (tau + 1 < max_tau &&
                    cmnd[tau + 1] < cmnd[tau]) {
+
                 tau++;
             }
 
             tau_estimate = tau;
+
             break;
         }
     }
@@ -182,37 +205,78 @@ float detect_pitch_yin(float *buf, int size)
     if (tau_estimate == -1)
         return 0.0f;
 
-    // --------------------------------------------------------
-    // Parabolic interpolation
-    // --------------------------------------------------------
-
-    if (tau_estimate > 0 &&
-        tau_estimate < tau_max - 1) {
-
-        float s0 = cmnd[tau_estimate - 1];
-        float s1 = cmnd[tau_estimate];
-        float s2 = cmnd[tau_estimate + 1];
-
-        float better_tau =
-            tau_estimate +
-            (s2 - s0) /
-            (2.0f * (2.0f * s1 - s2 - s0));
-
-        return (float)SR / better_tau;
-    }
-
     return (float)SR / (float)tau_estimate;
 }
 
 // ============================================================
-// OSCILLATOR UPDATE
+// ANALYSIS THREAD
 // ============================================================
 
-void update_oscillators(float f0, float rms)
+void *analysis_worker(void *arg)
 {
-    // silence gate
+    float frame[BUFFER_SIZE];
 
-    if (rms < 0.01f || f0 <= 0.0f) {
+    while (running) {
+
+        if (!analysis_ready) {
+
+            usleep(1000);
+
+            continue;
+        }
+
+        pthread_mutex_lock(&analysis_mutex);
+
+        memcpy(frame,
+               analysis_buffer,
+               sizeof(float) * BUFFER_SIZE);
+
+        analysis_ready = 0;
+
+        pthread_mutex_unlock(&analysis_mutex);
+
+        // remove DC
+
+        float mean = 0.0f;
+
+        for (int i = 0; i < BUFFER_SIZE; i++)
+            mean += frame[i];
+
+        mean /= BUFFER_SIZE;
+
+        for (int i = 0; i < BUFFER_SIZE; i++)
+            frame[i] -= mean;
+
+        apply_hann(frame, BUFFER_SIZE);
+
+        float rms =
+            compute_rms(frame, BUFFER_SIZE);
+
+        float f0 =
+            detect_pitch_yin(frame, BUFFER_SIZE);
+
+        if (f0 < 50.0f || f0 > 500.0f)
+            f0 = 0.0f;
+
+        detected_f0 = f0;
+        detected_rms = rms;
+    }
+
+    return NULL;
+}
+
+// ============================================================
+// OSC UPDATE
+// ============================================================
+
+void update_oscillators()
+{
+    float f0 = detected_f0;
+    float rms = detected_rms;
+
+    if (rms < 0.01f ||
+        f0 <= 0.0f ||
+        isnan(f0)) {
 
         for (int i = 0; i < osc_count; i++)
             osc_bank[i].target_amp = 0.0f;
@@ -222,14 +286,12 @@ void update_oscillators(float f0, float rms)
 
     int count = 0;
 
-    // only a few harmonics for cleaner sound
-
     for (int i = 1; i <= 6; i++) {
 
         float freq =
             f0 *
             harmony_ratio *
-            i;
+            (float)i;
 
         if (freq > SR * 0.45f)
             break;
@@ -249,60 +311,18 @@ void update_oscillators(float f0, float rms)
 }
 
 // ============================================================
-// ANALYSIS
-// ============================================================
-
-void analyze()
-{
-    float frame[BUFFER_SIZE];
-
-    get_analysis_frame(frame);
-
-    // remove DC
-
-    float mean = 0.0f;
-
-    for (int i = 0; i < BUFFER_SIZE; i++)
-        mean += frame[i];
-
-    mean /= BUFFER_SIZE;
-
-    for (int i = 0; i < BUFFER_SIZE; i++)
-        frame[i] -= mean;
-
-    // apply window
-
-    apply_hann(frame, BUFFER_SIZE);
-
-    // RMS gate
-
-    float rms = compute_rms(frame, BUFFER_SIZE);
-
-    // YIN pitch detection
-
-    float f0 = detect_pitch_yin(frame, BUFFER_SIZE);
-
-    // reject unrealistic pitches
-
-    if (f0 < 50.0f || f0 > 1000.0f)
-        f0 = 0.0f;
-
-    update_oscillators(f0, rms);
-}
-
-// ============================================================
-// SYNTHESIS
+// SYNTH
 // ============================================================
 
 float synth_sample()
 {
     float out = 0.0f;
 
+    update_oscillators();
+
     for (int i = 0; i < osc_count; i++) {
 
         Osc *o = &osc_bank[i];
-
-        // smoother interpolation
 
         o->freq +=
             0.002f *
@@ -312,7 +332,9 @@ float synth_sample()
             0.002f *
             (o->target_amp - o->amp);
 
-        out += sinf(o->phase) * o->amp;
+        out +=
+            sinf(o->phase) *
+            o->amp;
 
         o->phase +=
             2.0f *
@@ -333,17 +355,17 @@ float synth_sample()
 
 int process(jack_nframes_t nframes, void *arg)
 {
-    jack_default_audio_sample_t *in =
+    float *in =
         jack_port_get_buffer(input_port, nframes);
 
-    jack_default_audio_sample_t *out =
+    float *out =
         jack_port_get_buffer(output_port, nframes);
 
     for (unsigned int i = 0; i < nframes; i++) {
 
         float sample = in[i];
 
-        // circular analysis buffer
+        // lightweight realtime work only
 
         analysis_buffer[write_pos] = sample;
 
@@ -354,14 +376,16 @@ int process(jack_nframes_t nframes, void *arg)
 
         if (hop_counter >= HOP_SIZE) {
 
-            analyze();
+            pthread_mutex_lock(&analysis_mutex);
+
+            analysis_ready = 1;
+
+            pthread_mutex_unlock(&analysis_mutex);
 
             hop_counter = 0;
         }
 
         float wet = synth_sample();
-
-        // dry/wet mix
 
         out[i] =
             sample * 0.75f +
@@ -380,11 +404,6 @@ void signal_handler(int sig)
     running = 0;
 }
 
-void jack_shutdown(void *arg)
-{
-    running = 0;
-}
-
 // ============================================================
 // MAIN
 // ============================================================
@@ -394,14 +413,10 @@ int main(int argc, char *argv[])
     if (argc > 1)
         harmony_ratio = atof(argv[1]);
 
-    printf("====================================\n");
-    printf("YIN JACK Harmonizer\n");
-    printf("Harmony Ratio: %.2f\n", harmony_ratio);
-    printf("CTRL+C to stop\n");
-    printf("====================================\n");
-
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
+
+    printf("Starting harmonizer...\n");
 
     client = jack_client_open(
         "harmonizer",
@@ -421,11 +436,6 @@ int main(int argc, char *argv[])
         process,
         NULL);
 
-    jack_on_shutdown(
-        client,
-        jack_shutdown,
-        NULL);
-
     input_port = jack_port_register(
         client,
         "input",
@@ -443,9 +453,7 @@ int main(int argc, char *argv[])
     if (!input_port || !output_port) {
 
         fprintf(stderr,
-                "Failed to register ports\n");
-
-        jack_client_close(client);
+                "Failed to register JACK ports\n");
 
         return 1;
     }
@@ -455,18 +463,26 @@ int main(int argc, char *argv[])
         fprintf(stderr,
                 "Failed to activate JACK\n");
 
-        jack_client_close(client);
-
         return 1;
     }
 
-    printf("Running...\n");
+    // PERMANENT FIX:
+    // separate analysis thread
 
-    while (running) {
+    pthread_create(
+        &analysis_thread,
+        NULL,
+        analysis_worker,
+        NULL);
+
+    printf("Running.\n");
+
+    while (running)
         usleep(10000);
-    }
 
-    printf("\nStopping...\n");
+    printf("Stopping...\n");
+
+    pthread_join(analysis_thread, NULL);
 
     jack_deactivate(client);
 
