@@ -1,13 +1,15 @@
 #include <jack/jack.h>
 #include <math.h>
-#include <stdlib.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <signal.h>
+#include <unistd.h>
 
 #define SR 48000
 #define BUFFER_SIZE 2048
 #define HOP_SIZE 256
-#define MAX_OSC 64
+#define MAX_OSC 32
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -17,51 +19,113 @@
 // JACK
 // ============================================================
 
-jack_port_t *in_port;
-jack_port_t *out_port;
+jack_port_t *input_port;
+jack_port_t *output_port;
 jack_client_t *client;
 
 // ============================================================
-// AUDIO BUFFERS
+// RUN STATE
 // ============================================================
 
-float buffer[BUFFER_SIZE];
-int buffer_pos = 0;
+volatile int running = 1;
 
 // ============================================================
-// HARMONIC MODEL
+// ANALYSIS BUFFER (circular)
+// ============================================================
+
+float analysis_buffer[BUFFER_SIZE];
+int write_pos = 0;
+int hop_counter = 0;
+
+// ============================================================
+// OSCILLATORS
 // ============================================================
 
 typedef struct {
     float freq;
+    float target_freq;
+
     float amp;
+    float target_amp;
+
     float phase;
 } Osc;
 
 Osc osc_bank[MAX_OSC];
 int osc_count = 0;
 
-volatile float harmony_ratio = 1.5f;
+float harmony_ratio = 1.5f;
 
 // ============================================================
-// AUTOCORRELATION PITCH DETECTION
+// UTIL
+// ============================================================
+
+float clamp(float x, float a, float b)
+{
+    if (x < a) return a;
+    if (x > b) return b;
+    return x;
+}
+
+// ============================================================
+// RMS
+// ============================================================
+
+float compute_rms(float *buf, int size)
+{
+    float sum = 0.0f;
+
+    for (int i = 0; i < size; i++)
+        sum += buf[i] * buf[i];
+
+    return sqrtf(sum / size);
+}
+
+// ============================================================
+// COPY CIRCULAR BUFFER
+// ============================================================
+
+void get_analysis_frame(float *dst)
+{
+    int idx = write_pos;
+
+    for (int i = 0; i < BUFFER_SIZE; i++) {
+        dst[i] = analysis_buffer[(idx + i) % BUFFER_SIZE];
+    }
+}
+
+// ============================================================
+// NORMALIZED AUTOCORRELATION
 // ============================================================
 
 float detect_pitch(float *buf, int size)
 {
-    int best_lag = 0;
     float best_corr = 0.0f;
+    int best_lag = 0;
 
-    int min_lag = SR / 1000;   // 1000 Hz max
-    int max_lag = SR / 50;     // 50 Hz min
+    int min_lag = SR / 1000;
+    int max_lag = SR / 80;
 
     for (int lag = min_lag; lag < max_lag; lag++) {
 
         float corr = 0.0f;
+        float norm1 = 0.0f;
+        float norm2 = 0.0f;
 
         for (int i = 0; i < size - lag; i++) {
-            corr += buf[i] * buf[i + lag];
+
+            float a = buf[i];
+            float b = buf[i + lag];
+
+            corr += a * b;
+            norm1 += a * a;
+            norm2 += b * b;
         }
+
+        float norm = sqrtf(norm1 * norm2);
+
+        if (norm > 0.0f)
+            corr /= norm;
 
         if (corr > best_corr) {
             best_corr = corr;
@@ -69,42 +133,86 @@ float detect_pitch(float *buf, int size)
         }
     }
 
-    if (best_lag == 0) return 0.0f;
+    // reject weak matches
+    if (best_corr < 0.35f)
+        return 0.0f;
+
+    if (best_lag == 0)
+        return 0.0f;
 
     return (float)SR / best_lag;
 }
 
 // ============================================================
-// OSCILLATOR UPDATE
+// UPDATE OSCILLATORS
 // ============================================================
 
-void update_oscillators(float f0)
+void update_oscillators(float f0, float rms)
 {
-    osc_count = 0;
+    // silence gate
+    if (rms < 0.01f || f0 <= 0.0f) {
 
-    if (f0 <= 0.0f) return;
+        for (int i = 0; i < osc_count; i++)
+            osc_bank[i].target_amp = 0.0f;
 
-    // generate harmonic series
-    for (int i = 1; i < MAX_OSC; i++) {
+        return;
+    }
 
-        float freq = f0 * i * harmony_ratio;
+    int count = 0;
 
-        if (freq > SR * 0.5f)
+    for (int i = 1; i <= 8; i++) {
+
+        float freq = f0 * harmony_ratio * i;
+
+        if (freq > SR * 0.45f)
             break;
 
-        osc_bank[osc_count].freq = freq;
-        osc_bank[osc_count].amp = 1.0f / i;
-        osc_bank[osc_count].phase = 0.0f;
+        osc_bank[count].target_freq = freq;
+        osc_bank[count].target_amp = 0.15f / i;
 
-        osc_count++;
+        count++;
     }
+
+    // fade unused oscillators out
+    for (int i = count; i < osc_count; i++)
+        osc_bank[i].target_amp = 0.0f;
+
+    osc_count = count;
+}
+
+// ============================================================
+// ANALYSIS
+// ============================================================
+
+void analyze()
+{
+    float frame[BUFFER_SIZE];
+
+    get_analysis_frame(frame);
+
+    // remove DC
+    float mean = 0.0f;
+
+    for (int i = 0; i < BUFFER_SIZE; i++)
+        mean += frame[i];
+
+    mean /= BUFFER_SIZE;
+
+    for (int i = 0; i < BUFFER_SIZE; i++)
+        frame[i] -= mean;
+
+    float rms = compute_rms(frame, BUFFER_SIZE);
+
+    float f0 = detect_pitch(frame, BUFFER_SIZE);
+
+    update_oscillators(f0, rms);
 }
 
 // ============================================================
 // SYNTHESIS
 // ============================================================
 
-float synth()
+float synth_sample()
 {
     float out = 0.0f;
 
@@ -112,74 +220,71 @@ float synth()
 
         Osc *o = &osc_bank[i];
 
-        out += o->amp * sinf(o->phase);
+        // smooth parameters
+        o->freq += 0.001f * (o->target_freq - o->freq);
+        o->amp  += 0.001f * (o->target_amp  - o->amp);
+
+        out += sinf(o->phase) * o->amp;
 
         o->phase += 2.0f * M_PI * o->freq / SR;
 
-        if (o->phase > 2.0f * M_PI)
+        if (o->phase >= 2.0f * M_PI)
             o->phase -= 2.0f * M_PI;
     }
 
-    return out * 0.1f;
+    return clamp(out, -1.0f, 1.0f);
 }
 
 // ============================================================
-// ANALYSIS STEP
-// ============================================================
-
-void analyze()
-{
-    float f0 = detect_pitch(buffer, BUFFER_SIZE);
-
-    update_oscillators(f0);
-
-    printf("Detected f0: %.2f Hz | Oscillators: %d\n",
-           f0, osc_count);
-}
-
-// ============================================================
-// JACK CALLBACK
+// JACK PROCESS CALLBACK
 // ============================================================
 
 int process(jack_nframes_t nframes, void *arg)
 {
-    float *in = jack_port_get_buffer(in_port, nframes);
-    float *out = jack_port_get_buffer(out_port, nframes);
+    jack_default_audio_sample_t *in =
+        jack_port_get_buffer(input_port, nframes);
 
-    static int hop = 0;
+    jack_default_audio_sample_t *out =
+        jack_port_get_buffer(output_port, nframes);
 
-    for (int i = 0; i < nframes; i++) {
+    for (unsigned int i = 0; i < nframes; i++) {
 
-        buffer[buffer_pos++] = in[i];
+        float sample = in[i];
 
-        if (buffer_pos >= BUFFER_SIZE) {
-            memmove(buffer,
-                    buffer + HOP_SIZE,
-                    sizeof(float) * (BUFFER_SIZE - HOP_SIZE));
+        // write circular buffer
+        analysis_buffer[write_pos] = sample;
 
-            buffer_pos = BUFFER_SIZE - HOP_SIZE;
-        }
+        write_pos++;
+        write_pos %= BUFFER_SIZE;
 
-        hop++;
+        hop_counter++;
 
-        if (hop >= HOP_SIZE) {
+        if (hop_counter >= HOP_SIZE) {
             analyze();
-            hop = 0;
+            hop_counter = 0;
         }
 
-        out[i] = in[i] * 0.5f + synth() * 0.8f;
+        float wet = synth_sample();
+
+        // dry/wet mix
+        out[i] = sample * 0.7f + wet * 0.5f;
     }
 
     return 0;
 }
 
 // ============================================================
-// JACK SETUP
+// CLEAN SHUTDOWN
 // ============================================================
 
-void shutdown_cb(void *arg)
+void signal_handler(int sig)
 {
-    exit(1);
+    running = 0;
+}
+
+void jack_shutdown(void *arg)
+{
+    running = 0;
 }
 
 // ============================================================
@@ -193,32 +298,53 @@ int main(int argc, char *argv[])
 
     printf("Harmony ratio: %.2f\n", harmony_ratio);
 
-    client = jack_client_open("harmonizer", 0, NULL);
+    signal(SIGINT, signal_handler);
+
+    client = jack_client_open(
+        "harmonizer",
+        JackNullOption,
+        NULL);
 
     if (!client) {
-        fprintf(stderr, "Failed JACK\n");
+        fprintf(stderr, "Failed to connect to JACK\n");
         return 1;
     }
 
     jack_set_process_callback(client, process, NULL);
-    jack_on_shutdown(client, shutdown_cb, NULL);
+    jack_on_shutdown(client, jack_shutdown, NULL);
 
-    in_port = jack_port_register(client,
-                                 "in",
-                                 JACK_DEFAULT_AUDIO_TYPE,
-                                 JackPortIsInput, 0);
+    input_port = jack_port_register(
+        client,
+        "input",
+        JACK_DEFAULT_AUDIO_TYPE,
+        JackPortIsInput,
+        0);
 
-    out_port = jack_port_register(client,
-                                  "out",
-                                  JACK_DEFAULT_AUDIO_TYPE,
-                                  JackPortIsOutput, 0);
+    output_port = jack_port_register(
+        client,
+        "output",
+        JACK_DEFAULT_AUDIO_TYPE,
+        JackPortIsOutput,
+        0);
 
-    jack_activate(client);
+    if (!input_port || !output_port) {
+        fprintf(stderr, "Failed to create ports\n");
+        return 1;
+    }
 
-    printf("Running...\n");
+    if (jack_activate(client)) {
+        fprintf(stderr, "Cannot activate JACK client\n");
+        return 1;
+    }
 
-    while (1)
+    printf("Running. Press CTRL+C to quit.\n");
+
+    while (running)
         sleep(1);
+
+    printf("Shutting down...\n");
+
+    jack_client_close(client);
 
     return 0;
 }
