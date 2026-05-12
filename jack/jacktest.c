@@ -19,15 +19,15 @@
 // JACK
 // ============================================================
 
+jack_client_t *client;
 jack_port_t *input_port;
 jack_port_t *output_port;
-jack_client_t *client;
 
 // ============================================================
 // RUN STATE
 // ============================================================
 
-volatile int running = 1;
+volatile sig_atomic_t running = 1;
 
 // ============================================================
 // ANALYSIS BUFFER (circular)
@@ -57,7 +57,7 @@ int osc_count = 0;
 float harmony_ratio = 1.5f;
 
 // ============================================================
-// UTIL
+// UTILS
 // ============================================================
 
 float clamp(float x, float a, float b)
@@ -78,7 +78,7 @@ float compute_rms(float *buf, int size)
     for (int i = 0; i < size; i++)
         sum += buf[i] * buf[i];
 
-    return sqrtf(sum / size);
+    return sqrtf(sum / (float)size);
 }
 
 // ============================================================
@@ -95,7 +95,7 @@ void get_analysis_frame(float *dst)
 }
 
 // ============================================================
-// NORMALIZED AUTOCORRELATION
+// PITCH DETECTION
 // ============================================================
 
 float detect_pitch(float *buf, int size)
@@ -103,8 +103,8 @@ float detect_pitch(float *buf, int size)
     float best_corr = 0.0f;
     int best_lag = 0;
 
-    int min_lag = SR / 1000;
-    int max_lag = SR / 80;
+    int min_lag = SR / 1000; // 1000 Hz
+    int max_lag = SR / 80;   // 80 Hz
 
     for (int lag = min_lag; lag < max_lag; lag++) {
 
@@ -133,18 +133,18 @@ float detect_pitch(float *buf, int size)
         }
     }
 
-    // reject weak matches
+    // reject weak detections
     if (best_corr < 0.35f)
         return 0.0f;
 
     if (best_lag == 0)
         return 0.0f;
 
-    return (float)SR / best_lag;
+    return (float)SR / (float)best_lag;
 }
 
 // ============================================================
-// UPDATE OSCILLATORS
+// OSCILLATOR UPDATE
 // ============================================================
 
 void update_oscillators(float f0, float rms)
@@ -168,12 +168,12 @@ void update_oscillators(float f0, float rms)
             break;
 
         osc_bank[count].target_freq = freq;
-        osc_bank[count].target_amp = 0.15f / i;
+        osc_bank[count].target_amp = 0.15f / (float)i;
 
         count++;
     }
 
-    // fade unused oscillators out
+    // fade out unused oscillators
     for (int i = count; i < osc_count; i++)
         osc_bank[i].target_amp = 0.0f;
 
@@ -190,13 +190,13 @@ void analyze()
 
     get_analysis_frame(frame);
 
-    // remove DC
+    // remove DC offset
     float mean = 0.0f;
 
     for (int i = 0; i < BUFFER_SIZE; i++)
         mean += frame[i];
 
-    mean /= BUFFER_SIZE;
+    mean /= (float)BUFFER_SIZE;
 
     for (int i = 0; i < BUFFER_SIZE; i++)
         frame[i] -= mean;
@@ -220,13 +220,15 @@ float synth_sample()
 
         Osc *o = &osc_bank[i];
 
-        // smooth parameters
+        // smooth frequency
         o->freq += 0.001f * (o->target_freq - o->freq);
-        o->amp  += 0.001f * (o->target_amp  - o->amp);
+
+        // smooth amplitude
+        o->amp += 0.001f * (o->target_amp - o->amp);
 
         out += sinf(o->phase) * o->amp;
 
-        o->phase += 2.0f * M_PI * o->freq / SR;
+        o->phase += 2.0f * M_PI * o->freq / (float)SR;
 
         if (o->phase >= 2.0f * M_PI)
             o->phase -= 2.0f * M_PI;
@@ -236,7 +238,7 @@ float synth_sample()
 }
 
 // ============================================================
-// JACK PROCESS CALLBACK
+// JACK CALLBACK
 // ============================================================
 
 int process(jack_nframes_t nframes, void *arg)
@@ -274,7 +276,7 @@ int process(jack_nframes_t nframes, void *arg)
 }
 
 // ============================================================
-// CLEAN SHUTDOWN
+// SHUTDOWN
 // ============================================================
 
 void signal_handler(int sig)
@@ -296,10 +298,17 @@ int main(int argc, char *argv[])
     if (argc > 1)
         harmony_ratio = atof(argv[1]);
 
-    printf("Harmony ratio: %.2f\n", harmony_ratio);
+    printf("====================================\n");
+    printf("Simple JACK Harmonizer\n");
+    printf("Harmony Ratio: %.2f\n", harmony_ratio);
+    printf("CTRL+C to stop\n");
+    printf("====================================\n");
 
+    // signal handlers
     signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
 
+    // create JACK client
     client = jack_client_open(
         "harmonizer",
         JackNullOption,
@@ -310,9 +319,11 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    // callbacks
     jack_set_process_callback(client, process, NULL);
     jack_on_shutdown(client, jack_shutdown, NULL);
 
+    // ports
     input_port = jack_port_register(
         client,
         "input",
@@ -328,23 +339,74 @@ int main(int argc, char *argv[])
         0);
 
     if (!input_port || !output_port) {
-        fprintf(stderr, "Failed to create ports\n");
+
+        fprintf(stderr, "Failed to register JACK ports\n");
+
+        jack_client_close(client);
+
         return 1;
     }
 
+    // activate JACK
     if (jack_activate(client)) {
-        fprintf(stderr, "Cannot activate JACK client\n");
+
+        fprintf(stderr, "Failed to activate JACK client\n");
+
+        jack_client_close(client);
+
         return 1;
     }
 
-    printf("Running. Press CTRL+C to quit.\n");
+    printf("Running...\n");
 
-    while (running)
-        sleep(1);
+    // responsive loop
+    while (running) {
+        usleep(10000);
+    }
 
-    printf("Shutting down...\n");
+    printf("\nStopping...\n");
 
+    // stop processing
+    jack_deactivate(client);
+
+    // disconnect input connections
+    const char **connections;
+
+    connections = jack_port_get_connections(input_port);
+
+    if (connections) {
+
+        for (int i = 0; connections[i]; i++) {
+
+            jack_disconnect(
+                client,
+                connections[i],
+                jack_port_name(input_port));
+        }
+
+        free(connections);
+    }
+
+    // disconnect output connections
+    connections = jack_port_get_connections(output_port);
+
+    if (connections) {
+
+        for (int i = 0; connections[i]; i++) {
+
+            jack_disconnect(
+                client,
+                jack_port_name(output_port),
+                connections[i]);
+        }
+
+        free(connections);
+    }
+
+    // close JACK
     jack_client_close(client);
+
+    printf("Exited cleanly.\n");
 
     return 0;
 }
