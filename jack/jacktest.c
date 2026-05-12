@@ -78,7 +78,7 @@ int main(int argc, char *argv[])
 
     input_port = jack_port_register(
         client,
-        "input",
+        "in",
         JACK_DEFAULT_AUDIO_TYPE,
         JackPortIsInput,
         0
@@ -86,7 +86,7 @@ int main(int argc, char *argv[])
 
     output_port = jack_port_register(
         client,
-        "output",
+        "out",
         JACK_DEFAULT_AUDIO_TYPE,
         JackPortIsOutput,
         0
