@@ -1,6 +1,7 @@
 #include <pipewire/pipewire.h>
 #include <spa/param/audio/format-utils.h>
 #include <stdio.h>
+#include <string.h>
 
 #define SAMPLE_RATE 48000
 #define CHANNELS 1
@@ -22,26 +23,20 @@ static void on_process(void *userdata)
 
     buf = b->buffer;
 
-    if (buf->datas[0].data) {
-        float *samples = buf->datas[0].data;
+    if (!buf->datas[0].data)
+        goto done;
 
-        uint32_t n_bytes = buf->datas[0].chunk->size;
-        uint32_t n_samples = n_bytes / sizeof(float);
+    float *samples = buf->datas[0].data;
 
-        float peak = 0.0f;
+    uint32_t n_bytes = buf->datas[0].chunk->size;
+    uint32_t n_samples = n_bytes / sizeof(float);
 
-        for (uint32_t i = 0; i < n_samples; i++) {
-            float s = samples[i];
-            if (s < 0) s = -s;
-
-            if (s > peak)
-                peak = s;
-        }
-
-        printf("Peak: %f\n", peak);
-        fflush(stdout);
+    // Simple passthrough
+    for (uint32_t i = 0; i < n_samples; i++) {
+        samples[i] *= 1.0f;
     }
 
+done:
     pw_stream_queue_buffer(d->stream, b);
 }
 
@@ -61,13 +56,14 @@ int main(int argc, char *argv[])
     struct pw_properties *props =
         pw_properties_new(
             PW_KEY_MEDIA_TYPE, "Audio",
-            PW_KEY_MEDIA_CATEGORY, "Capture",
+            PW_KEY_MEDIA_CATEGORY, "Duplex",
             PW_KEY_MEDIA_ROLE, "DSP",
+            PW_KEY_NODE_LATENCY, "64/48000",
             NULL);
 
     data.stream = pw_stream_new_simple(
         pw_main_loop_get_loop(data.loop),
-        "capture",
+        "monitor",
         props,
         &stream_events,
         &data);
@@ -89,9 +85,9 @@ int main(int argc, char *argv[])
         SPA_PARAM_EnumFormat,
         &audio_info);
 
-    pw_stream_connect(
+    int res = pw_stream_connect(
         data.stream,
-        PW_DIRECTION_INPUT,
+        PW_DIRECTION_INPUT_OUTPUT,
         PW_ID_ANY,
         PW_STREAM_FLAG_AUTOCONNECT |
         PW_STREAM_FLAG_MAP_BUFFERS |
@@ -99,7 +95,12 @@ int main(int argc, char *argv[])
         params,
         1);
 
-    printf("Capturing audio...\n");
+    if (res < 0) {
+        fprintf(stderr, "Stream connect failed\n");
+        return 1;
+    }
+
+    printf("Running low-latency monitor...\n");
 
     pw_main_loop_run(data.loop);
 
