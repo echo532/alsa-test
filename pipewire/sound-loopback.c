@@ -1,51 +1,48 @@
 #include <pipewire/pipewire.h>
 #include <spa/param/audio/format-utils.h>
 #include <stdio.h>
-#include <string.h>
 
 #define SAMPLE_RATE 48000
 #define CHANNELS 1
 
 struct data {
     struct pw_main_loop *loop;
-    struct pw_stream *input;
-    struct pw_stream *output;
+    struct pw_stream *stream;
 };
 
 static void on_process(void *userdata)
 {
     struct data *d = userdata;
 
-    struct pw_buffer *in_buf, *out_buf;
-    struct spa_buffer *in_spa, *out_spa;
+    struct pw_buffer *b;
+    struct spa_buffer *buf;
 
-    in_buf = pw_stream_dequeue_buffer(d->input);
-    out_buf = pw_stream_dequeue_buffer(d->output);
-
-    if (!in_buf || !out_buf)
+    if (!(b = pw_stream_dequeue_buffer(d->stream)))
         return;
 
-    in_spa = in_buf->buffer;
-    out_spa = out_buf->buffer;
+    buf = b->buffer;
 
-    if (!in_spa->datas[0].data || !out_spa->datas[0].data)
-        goto done;
+    if (buf->datas[0].data) {
+        float *samples = buf->datas[0].data;
 
-    float *src = in_spa->datas[0].data;
-    float *dst = out_spa->datas[0].data;
+        uint32_t n_bytes = buf->datas[0].chunk->size;
+        uint32_t n_samples = n_bytes / sizeof(float);
 
-    uint32_t n_bytes = in_spa->datas[0].chunk->size;
-    uint32_t n_samples = n_bytes / sizeof(float);
+        float peak = 0.0f;
 
-    for (uint32_t i = 0; i < n_samples; i++) {
-        dst[i] = src[i];
+        for (uint32_t i = 0; i < n_samples; i++) {
+            float s = samples[i];
+            if (s < 0) s = -s;
+
+            if (s > peak)
+                peak = s;
+        }
+
+        printf("Peak: %f\n", peak);
+        fflush(stdout);
     }
 
-    out_spa->datas[0].chunk->size = n_bytes;
-
-done:
-    pw_stream_queue_buffer(d->input, in_buf);
-    pw_stream_queue_buffer(d->output, out_buf);
+    pw_stream_queue_buffer(d->stream, b);
 }
 
 static const struct pw_stream_events stream_events = {
@@ -61,31 +58,17 @@ int main(int argc, char *argv[])
 
     data.loop = pw_main_loop_new(NULL);
 
-    struct pw_properties *in_props =
+    struct pw_properties *props =
         pw_properties_new(
             PW_KEY_MEDIA_TYPE, "Audio",
             PW_KEY_MEDIA_CATEGORY, "Capture",
             PW_KEY_MEDIA_ROLE, "DSP",
             NULL);
 
-    struct pw_properties *out_props =
-        pw_properties_new(
-            PW_KEY_MEDIA_TYPE, "Audio",
-            PW_KEY_MEDIA_CATEGORY, "Playback",
-            PW_KEY_MEDIA_ROLE, "DSP",
-            NULL);
-
-    data.input = pw_stream_new_simple(
+    data.stream = pw_stream_new_simple(
         pw_main_loop_get_loop(data.loop),
-        "input",
-        in_props,
-        &stream_events,
-        &data);
-
-    data.output = pw_stream_new_simple(
-        pw_main_loop_get_loop(data.loop),
-        "output",
-        out_props,
+        "capture",
+        props,
         &stream_events,
         &data);
 
@@ -107,7 +90,7 @@ int main(int argc, char *argv[])
         &audio_info);
 
     pw_stream_connect(
-        data.input,
+        data.stream,
         PW_DIRECTION_INPUT,
         PW_ID_ANY,
         PW_STREAM_FLAG_AUTOCONNECT |
@@ -116,22 +99,11 @@ int main(int argc, char *argv[])
         params,
         1);
 
-    pw_stream_connect(
-        data.output,
-        PW_DIRECTION_OUTPUT,
-        PW_ID_ANY,
-        PW_STREAM_FLAG_AUTOCONNECT |
-        PW_STREAM_FLAG_MAP_BUFFERS |
-        PW_STREAM_FLAG_RT_PROCESS,
-        params,
-        1);
-
-    printf("Running PipeWire loopback...\n");
+    printf("Capturing audio...\n");
 
     pw_main_loop_run(data.loop);
 
-    pw_stream_destroy(data.input);
-    pw_stream_destroy(data.output);
+    pw_stream_destroy(data.stream);
     pw_main_loop_destroy(data.loop);
 
     pw_deinit();
