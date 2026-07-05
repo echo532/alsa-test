@@ -72,12 +72,16 @@ int main(void)
 
     uint8_t buffer[1024];
 
+    struct spa_pod_builder b =
+        SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
+
     const struct spa_pod *params[1];
 
-    params[0] = spa_format_audio_raw_build(
-        SPA_POD_BUILDER_INIT(buffer, sizeof(buffer)),
-        SPA_PARAM_EnumFormat,
-        &info);
+    params[0] =
+        spa_format_audio_raw_build(
+            &b,
+            SPA_PARAM_EnumFormat,
+            &info);
 
     if (pw_stream_connect(
             app.stream,
