@@ -15,6 +15,8 @@ struct app {
 
 static void on_process(void *userdata)
 {
+    printf("process callback fired\n");
+    
     struct app *app = userdata;
 
     struct pw_buffer *b = pw_stream_dequeue_buffer(app->stream);
